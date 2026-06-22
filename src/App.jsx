@@ -5,7 +5,7 @@ import { Line } from 'react-chartjs-2';
 // Registar componentes do Chart.js para o ecossistema React
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler);
 
-// ── CONFIGURAÇÕES DOS BANCOS E APIS (SIMULAÇÃO 15 MINUTOS MULTI-TICKET) ─────
+// ── CONFIGURAÇÕES DOS BANCOS E APIS ─────────────────────────────────────────
 const SB_URL = 'https://gghwqnqxquhrxchimerw.supabase.co';
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdnaHdxbnF4cXVocnhjaGltZXJ3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIxMzMxMjgsImV4cCI6MjA5NzcwOTEyOH0.mWAotOVvwVDL9gGnhbjn6asL7lWnrKpwc390nTf6RAc';
 const BRAPI_TOKEN = 'ws5Toz7mQL85uqbuWcXTDo';
@@ -32,11 +32,15 @@ export default function App() {
   const [modalTicker, setModalTicker] = useState('');
   const [modalNome, setModalNome] = useState('');
   
-  // Estados para Sugestões Inteligentes da Brapi
+  // Estados para Sugestões da Brapi
   const [sugestoes, setSugestoes] = useState([]);
   const [loadingSugestoes, setLoadingSugestoes] = useState(false);
   
-  // Notificações em tela
+  // ── ESTADOS DE FILTRO E COMPARAÇÃO DO HISTÓRICO DE LOGS ─────────────────────
+  const [dataFiltro, setDataFiltro] = useState(new Date().toISOString().split('T')[0]); 
+  const [ativosSelecionados, setAtivosSelecionados] = useState([]); // Array para suportar múltiplos ativos no comparador
+  
+  // Notificações
   const [toast, setToast] = useState({ show: false, message: '', type: 'info' });
 
   const showToast = (message, type = 'info') => {
@@ -74,31 +78,27 @@ export default function App() {
 
   useEffect(() => {
     carregarDados();
-    // Configurado para rodar de 15 em 15 minutos de forma otimizada
     const interval = setInterval(() => {
       executarCronVerificacao();
     }, 15 * 60 * 1000);
     return () => clearInterval(interval);
   }, [tickets]);
 
-  // ── SISTEMA DE AUTO-SUGESTÃO E BUSCA DE TICKERS (BRAPI) ─────────────────────
+  // ── AUTO-SUGESTÃO DE TICKERS COM SANITIZAÇÃO ───────────────────────────────
   useEffect(() => {
     if (modalId || !modalTicker.trim() || modalTicker.length < 2) {
       setSugestoes([]);
       return;
     }
 
-    // Debounce para evitar disparar requisições a cada tecla pressionada rapidamente
     const delayDebounceFn = setTimeout(async () => {
       setLoadingSugestoes(true);
       try {
-        const query = modalTicker.trim().toUpperCase();
+        const query = modalTicker.trim().toUpperCase(); // Garante CXSE3 e SAPR4 limpos
         const res = await fetch(`https://brapi.dev/api/available?search=${query}&token=${BRAPI_TOKEN}`);
         if (res.ok) {
           const dados = await res.json();
-          // Brapi retorna uma lista contendo strings ou objetos com informações detalhadas
           if (dados.stocks) {
-            // Filtrando apenas os principais resultados correspondentes para exibição rápida
             setSugestoes(dados.stocks.slice(0, 5));
           } else {
             setSugestoes([]);
@@ -114,13 +114,13 @@ export default function App() {
     return () => clearTimeout(delayDebounceFn);
   }, [modalTicker, modalId]);
 
-  // Executa uma consulta direta para buscar o nome longo da empresa selecionada
   const selecionarSugestao = async (tickerSelecionado) => {
-    setModalTicker(tickerSelecionado);
+    const limpo = tickerSelecionado.toUpperCase().trim();
+    setModalTicker(limpo);
     setSugestoes([]);
     setLoadingSugestoes(true);
     try {
-      const res = await fetch(`https://brapi.dev/api/quote/${tickerSelecionado}?token=${BRAPI_TOKEN}`);
+      const res = await fetch(`https://brapi.dev/api/quote/${limpo}?token=${BRAPI_TOKEN}`);
       if (res.ok) {
         const data = await res.json();
         if (data.results && data.results[0]) {
@@ -135,13 +135,13 @@ export default function App() {
     }
   };
 
-  // ── REQUISIÇÃO MULTI-TICKET OTIMIZADA (1 CRÉDITO POR CONSULTA GLOBAL) ──────
+  // ── REQUISIÇÃO MULTI-TICKET OTIMIZADA ──────────────────────────────────────
   const executarCronVerificacao = async () => {
     if (tickets.length === 0) return;
 
     setIsCronRunning(true);
     try {
-      const listaTickers = tickets.map(t => t.ticker).join(',');
+      const listaTickers = tickets.map(t => t.ticker.toUpperCase().trim()).join(',');
       const logsNovos = [];
       let precosMercado = {};
 
@@ -152,7 +152,7 @@ export default function App() {
           if (dadosMercado.results) {
             dadosMercado.results.forEach(ativo => {
               if (ativo.symbol && ativo.regularMarketPrice) {
-                precosMercado[ativo.symbol.toUpperCase()] = parseFloat(ativo.regularMarketPrice);
+                precosMercado[ativo.symbol.toUpperCase().trim()] = parseFloat(ativo.regularMarketPrice);
               }
             });
           }
@@ -162,11 +162,12 @@ export default function App() {
       }
 
       for (const t of tickets) {
-        let precoAtual = precosMercado[t.ticker];
+        const tickerChave = t.ticker.toUpperCase().trim();
+        let precoAtual = precosMercado[tickerChave];
         let statusLog = "Atualizado via API (Lote)";
 
         if (!precoAtual || isNaN(precoAtual)) {
-          const logsDoAtivo = logsHistoricos.filter(l => l.ticker === t.ticker);
+          const logsDoAtivo = logsHistoricos.filter(l => l.ticker.toUpperCase() === tickerChave);
           const ultimoLog = logsDoAtivo[logsDoAtivo.length - 1];
           const basePreco = ultimoLog ? parseFloat(ultimoLog.preco) : 50.00;
           precoAtual = parseFloat((basePreco + (Math.random() * 0.4 - 0.2)).toFixed(2));
@@ -174,7 +175,7 @@ export default function App() {
         }
 
         logsNovos.push({
-          ticker: t.ticker,
+          ticker: tickerChave,
           preco: parseFloat(precoAtual.toFixed(2)),
           status: statusLog,
           registrado_em: new Date().toISOString()
@@ -188,7 +189,7 @@ export default function App() {
       });
 
       if (!resPost.ok) throw new Error('Não foi possível gravar os logs no Supabase.');
-      showToast('Cotações sincronizadas em lote (Otimização de Crédito Ativa).', 'success');
+      showToast('Cotações sincronizadas com sucesso.', 'success');
       await carregarDados();
     } catch (err) {
       showToast(err.message, 'error');
@@ -208,7 +209,7 @@ export default function App() {
 
   const abrirModalEdicao = (ticket) => {
     setModalId(ticket.id);
-    setModalTicker(ticket.ticker);
+    setModalTicker(ticket.ticker.toUpperCase());
     setModalNome(ticket.nome);
     setSugestoes([]);
     setIsModalOpen(true);
@@ -238,7 +239,7 @@ export default function App() {
           headers: SB_HDR,
           body: JSON.stringify({ ticker: upperTicker, nome: modalNome })
         });
-        if (!res.ok) throw new Error('Erro ao inserir. Verifique as configurações do Supabase.');
+        if (!res.ok) throw new Error('Erro ao inserir ativo.');
         showToast(`Ticket ${upperTicker} adicionado.`);
       }
 
@@ -257,7 +258,7 @@ export default function App() {
         method: 'DELETE',
         headers: SB_HDR
       });
-      if (!res.ok) throw new Error('Não foi possível remover o ativo do Supabase.');
+      if (!res.ok) throw new Error('Não foi possível remover o ativo.');
       showToast(`Ativo ${ticker} removido.`);
       await carregarDados();
     } catch (err) {
@@ -265,17 +266,43 @@ export default function App() {
     }
   };
 
-  // ── CONFIGURAÇÃO DE DADOS PARA O GRÁFICO ───────────────────────────────────
-  const prepararDadosGrafico = () => {
-    const todosOsHorarios = [...new Set(logsHistoricos.map(l => 
-      new Date(l.registrado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
-    ))].slice(-15);
+  // ── CONTROLADOR DE SELEÇÃO MULTIPLA DO COMPARADOR ──────────────────────────
+  const alternarSelecaoAtivo = (ticker) => {
+    const t = ticker.toUpperCase();
+    if (ativosSelecionados.includes(t)) {
+      setAtivosSelecionados(ativosSelecionados.filter(item => item !== t));
+    } else {
+      setAtivosSelecionados([...ativosSelecionados, t]);
+    }
+  };
 
-    const todosOsTickers = [...new Set(logsHistoricos.map(l => l.ticker))];
+  // ── FILTRAGEM DINÂMICA DE LOGS POR DATA E ATIVOS SELECIONADOS ──────────────
+  const logsFiltradosPorData = logsHistoricos.filter(log => {
+    const dataLogStr = log.registrado_em.split('T')[0];
+    return dataLogStr === dataFiltro;
+  });
+
+  const logsFinaisExibição = logsFiltradosPorData.filter(log => {
+    if (ativosSelecionados.length === 0) return true; // Se nenhum tiver marcado, mostra tudo do dia
+    return ativosSelecionados.includes(log.ticker.toUpperCase());
+  });
+
+  // ── PREPARAÇÃO DO GRÁFICO COMPARATIVO POR DIA ──────────────────────────────
+  const prepararDadosGrafico = () => {
+    // Extrai os horários únicos ordenados do dia selecionado
+    const todosOsHorarios = [...new Set(logsFinaisExibição.map(l => 
+      new Date(l.registrado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+    ))];
+
+    // Identifica quais ativos devem figurar no gráfico baseado nas escolhas
+    const tickersParaPlotar = ativosSelecionados.length > 0 
+      ? ativosSelecionados 
+      : [...new Set(logsFinaisExibição.map(l => l.ticker.toUpperCase()))];
+
     const coresPaleta = ['#3b82f6', '#10b981', '#ef4444', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6'];
 
-    const datasets = todosOsTickers.map((ticker, index) => {
-      const logsDoAtivo = logsHistoricos.filter(l => l.ticker === ticker).slice(-15);
+    const datasets = tickersParaPlotar.map((ticker, index) => {
+      const logsDoAtivo = logsFinaisExibição.filter(l => l.ticker.toUpperCase() === ticker);
       const cor = coresPaleta[index % coresPaleta.length];
 
       return {
@@ -284,7 +311,7 @@ export default function App() {
         borderColor: cor,
         backgroundColor: cor + '08',
         borderWidth: 2.5,
-        tension: 0.3,
+        tension: 0.2,
         pointRadius: 3,
         pointHoverRadius: 6,
         fill: true,
@@ -327,7 +354,7 @@ export default function App() {
             </h1>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Sincronização Avançada (15 min) • Check: <span className="text-slate-200 font-mono">{lastCheckTime}</span>
+            Monitoramento de Alta Precisão (15 min) • Sincronizado às: <span className="text-slate-200 font-mono">{lastCheckTime}</span>
           </p>
         </div>
 
@@ -350,29 +377,25 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto space-y-6">
+        {/* CARDS DOS ATIVOS ATUAIS */}
         <section>
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-4">Ativos Monitorados</h2>
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-4">Painel em Tempo Real</h2>
           {tickets.length === 0 ? (
             <div className="p-8 text-center border border-dashed border-slate-800 rounded-2xl text-slate-500 text-xs">
-              Nenhum ticket ativo na tabela de controle. Adicione o seu primeiro ativo acima.
+              Nenhum ticket cadastrado no momento.
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               {tickets.map(t => {
-                const logsDoAtivo = logsHistoricos.filter(l => l.ticker === t.ticker);
+                const logsDoAtivo = logsHistoricos.filter(l => l.ticker.toUpperCase() === t.ticker.toUpperCase());
                 const ultimoLog = logsDoAtivo[logsDoAtivo.length - 1];
                 const precoAtual = ultimoLog ? `R$ ${parseFloat(ultimoLog.preco).toFixed(2).replace('.', ',')}` : 'Buscando...';
-
-                const hojeStr = new Date().toISOString().split('T')[0];
-                const logsDeHoje = logsDoAtivo.filter(l => l.registrado_em.startsWith(hojeStr));
-                const precoInicio = logsDeHoje.length > 0 ? `R$ ${parseFloat(logsDeHoje[0].preco).toFixed(2).replace('.', ',')}` : '—';
-                const precoFim = logsDeHoje.length > 0 ? `R$ ${parseFloat(logsDeHoje[logsDeHoje.length - 1].preco).toFixed(2).replace('.', ',')}` : '—';
 
                 return (
                   <div key={t.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 hover:border-slate-700 transition-all shadow-xl flex flex-col justify-between">
                     <div className="flex justify-between items-start">
                       <div>
-                        <h3 className="text-lg font-bold tracking-wider text-blue-400">{t.ticker}</h3>
+                        <h3 className="text-lg font-bold tracking-wider text-blue-400">{t.ticker.toUpperCase()}</h3>
                         <p className="text-xs text-slate-400 line-clamp-1">{t.nome}</p>
                       </div>
                       <div className="flex gap-1">
@@ -380,20 +403,8 @@ export default function App() {
                         <button onClick={() => excluirTicket(t.id, t.ticker)} className="p-1.5 hover:bg-red-950/40 rounded-lg text-slate-400 hover:text-red-400 transition-colors text-xs">✕</button>
                       </div>
                     </div>
-
                     <div className="my-4">
                       <div className="text-2xl font-black tracking-tight text-white">{precoAtual}</div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2 pt-3 border-t border-slate-800 text-[10px]">
-                      <div>
-                        <span className="text-slate-500 block uppercase font-medium">Abertura Hoje</span>
-                        <span className="text-slate-300 font-semibold font-mono">{precoInicio}</span>
-                      </div>
-                      <div className="text-right">
-                        <span className="text-slate-500 block uppercase font-medium">Último Fecho</span>
-                        <span className="text-slate-300 font-semibold font-mono">{precoFim}</span>
-                      </div>
                     </div>
                   </div>
                 );
@@ -402,47 +413,102 @@ export default function App() {
           )}
         </section>
 
-        <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-2xl">
-          <h2 className="text-sm font-semibold tracking-wide text-slate-200 mb-4">📈 Tendência Temporal (Janela de 15 min)</h2>
-          <div className="h-72 w-full">
-            {logsHistoricos.length > 0 ? (
+        {/* CONTROLES DE HISTÓRICO AVANÇADO E COMPARADOR */}
+        <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-2xl space-y-6">
+          <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 border-b border-slate-800 pb-4">
+            <div>
+              <h2 className="text-base font-bold text-slate-100 flex items-center gap-2">🎛️ Histórico e Comparador Avançado</h2>
+              <p className="text-xs text-slate-400 mt-0.5">Navegue por datas e marque múltiplos ativos para comparar as oscilações simultaneamente.</p>
+            </div>
+            
+            <div className="flex items-center gap-3 w-full lg:w-auto">
+              <label className="text-xs font-semibold text-slate-400 whitespace-nowrap">Navegar por Dia:</label>
+              <input 
+                type="date"
+                value={dataFiltro}
+                onChange={e => setDataFiltro(e.target.value)}
+                className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500 font-mono"
+              />
+            </div>
+          </div>
+
+          {/* CHECKBOXES DE SELEÇÃO MULTIPLA / FILTRO DE ATIVO */}
+          <div>
+            <span className="block text-[11px] font-bold uppercase text-slate-400 mb-2">Ativos Disponíveis para Comparação:</span>
+            <div className="flex flex-wrap gap-2">
+              {tickets.map(t => {
+                const ativoNome = t.ticker.toUpperCase();
+                const selecionado = ativosSelecionados.includes(ativoNome);
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => alternarSelecaoAtivo(ativoNome)}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-xl border transition-all ${
+                      selecionado 
+                        ? 'bg-blue-600/20 text-blue-400 border-blue-500 shadow-md shadow-blue-500/10' 
+                        : 'bg-slate-950 text-slate-400 border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    {selecionado ? '✓ ' : ''}{ativoNome}
+                  </button>
+                );
+              })}
+              {ativosSelecionados.length > 0 && (
+                <button
+                  onClick={() => setAtivosSelecionados([])}
+                  className="px-3 py-1.5 text-xs font-bold text-red-400 bg-red-950/20 border border-red-900 rounded-xl hover:bg-red-950/40"
+                >
+                  Limpar Comparador
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* GRÁFICO PLOTADO BASEADO NO FILTRO SELECIONADO */}
+          <div className="h-80 w-full pt-2">
+            {logsFinaisExibição.length > 0 ? (
               <Line data={prepararDadosGrafico()} options={opcoesGrafico} />
             ) : (
-              <div className="h-full flex items-center justify-center text-xs text-slate-500">
-                Aguardando logs históricos para renderizar o gráfico.
+              <div className="h-full flex flex-col items-center justify-center text-xs text-slate-500 border border-dashed border-slate-800 rounded-xl p-8">
+                <span>Nenhum log de cotação registrado no dia {new Date(dataFiltro + 'T12:00:00').toLocaleDateString('pt-BR')}.</span>
+                <span className="text-[10px] mt-1 text-slate-600">Dica: Selecione um dia em que o painel esteve ativo e monitorando.</span>
               </div>
             )}
           </div>
         </section>
 
+        {/* TABELA DETALHADA DO DIA SELECIONADO */}
         <section className="bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden">
           <div className="p-5 border-b border-slate-800 flex justify-between items-center">
-            <h2 className="text-sm font-semibold text-slate-200">📋 Logs Coletados</h2>
+            <h2 className="text-sm font-semibold text-slate-200">📋 Registros Filtrados ({new Date(dataFiltro + 'T12:00:00').toLocaleDateString('pt-BR')})</h2>
             <span className="text-[11px] font-mono px-2 py-0.5 bg-slate-800 border border-slate-700 text-slate-400 rounded-full">
-              {logsHistoricos.length} logs totais
+              {logsFinaisExibição.length} capturas encontradas
             </span>
           </div>
 
-          <div className="overflow-x-auto max-h-96">
-            {logsHistoricos.length === 0 ? (
-              <div className="p-8 text-center text-slate-500 text-xs">Nenhum log gravado até ao momento.</div>
+          <div className="overflow-x-auto max-h-80">
+            {logsFinaisExibição.length === 0 ? (
+              <div className="p-8 text-center text-slate-500 text-xs">Nenhum registro correspondente aos filtros aplicados.</div>
             ) : (
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="bg-slate-950 border-b border-slate-800 text-slate-400 font-medium">
-                    <th className="p-4 font-semibold uppercase tracking-wider text-[10px]">Data / Hora</th>
+                    <th className="p-4 font-semibold uppercase tracking-wider text-[10px]">Hora do Registro</th>
                     <th className="p-4 font-semibold uppercase tracking-wider text-[10px]">Ativo</th>
-                    <th className="p-4 font-semibold uppercase tracking-wider text-[10px]">Preço Capturado</th>
-                    <th className="p-4 font-semibold uppercase tracking-wider text-[10px]">Status da Rotina</th>
+                    <th className="p-4 font-semibold uppercase tracking-wider text-[10px]">Cotação</th>
+                    <th className="p-4 font-semibold uppercase tracking-wider text-[10px]">Origem / Status</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
-                  {[...logsHistoricos].reverse().slice(0, 50).map((log, i) => {
+                  {[...logsFinaisExibição].reverse().map((log, i) => {
                     const statusNoChange = log.status.includes("Simulado");
                     return (
                       <tr key={i} className="hover:bg-slate-800/30 transition-colors">
-                        <td className="p-4 text-slate-400 font-mono">{new Date(log.registrado_em).toLocaleString('pt-BR')}</td>
-                        <td className="p-4 font-bold text-blue-400">{log.ticker}</td>
+                        <td className="p-4 text-slate-400 font-mono">
+                          {new Date(log.registrado_em).toLocaleTimeString('pt-BR')}
+                        </td>
+                        <td className="p-4 font-bold text-blue-400">{log.ticker.toUpperCase()}</td>
                         <td className="p-4 font-mono font-medium text-white">R$ {parseFloat(log.preco).toFixed(2).replace('.', ',')}</td>
                         <td className="p-4">
                           <span className={`inline-flex items-center px-2 py-0.5 text-[10px] font-semibold rounded-full border ${
@@ -475,7 +541,7 @@ export default function App() {
                 <div className="relative">
                   <input 
                     type="text" 
-                    placeholder="Ex: PETR4 ou VALE3" 
+                    placeholder="Ex: PETR4, SAPR4 ou CXSE3" 
                     disabled={!!modalId}
                     value={modalTicker}
                     onChange={e => setModalTicker(e.target.value)}
@@ -486,7 +552,6 @@ export default function App() {
                   )}
                 </div>
 
-                {/* Caixa Suspensa contendo as Sugestões Predizíveis da Brapi */}
                 {sugestoes.length > 0 && (
                   <div className="absolute z-50 left-0 right-0 mt-1 bg-slate-950 border border-slate-800 rounded-xl shadow-2xl max-h-48 overflow-y-auto divide-y divide-slate-800/50">
                     {sugestoes.map((item, index) => {
@@ -499,7 +564,7 @@ export default function App() {
                           onClick={() => selecionarSugestao(tickerStr)}
                           className="w-full text-left px-4 py-2.5 text-xs text-slate-300 hover:bg-slate-800 hover:text-white transition-colors flex justify-between items-center"
                         >
-                          <span className="font-bold text-blue-400 tracking-wider font-mono">{tickerStr}</span>
+                          <span className="font-bold text-blue-400 tracking-wider font-mono">{tickerStr.toUpperCase()}</span>
                           <span className="text-[10px] text-slate-500">Selecionar ativo ➔</span>
                         </button>
                       );
@@ -512,7 +577,7 @@ export default function App() {
                 <label className="block text-[11px] font-semibold uppercase text-slate-400 mb-1">Nome da Empresa</label>
                 <input 
                   type="text" 
-                  placeholder="Selecione um ticker acima para preencher automaticamente" 
+                  placeholder="Selecione o código acima para preencher" 
                   value={modalNome}
                   onChange={e => setModalNome(e.target.value)}
                   className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500"
