@@ -5,11 +5,11 @@ import { Line } from 'react-chartjs-2';
 // Registar componentes do Chart.js para o ecossistema React
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler);
 
-// ── CONFIGURAÇÕES DO BANCO DE DADOS SUPABASE (CORRIGIDO) ────────────────────
-const SB_URL = import.meta.env.VITE_SUPABASE_URL || 'https://gghwqnqxquhrxchimerw.supabase.co';
-const SB_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdnaHdxbnF4cXVocnhjaGltZXJ3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIxMzMxMjgsImV4cCI6MjA5Yzc3MDkxMjh9.mWAotOVvwVDL9gGnhbjn6asL7lWnrKpwc390nTf6RAc';
+// ── CONFIGURAÇÕES DOS BANCOS E APIS (SIMULAÇÃO 15 MINUTOS MULTI-TICKET) ─────
+const SB_URL = 'https://gghwqnqxquhrxchimerw.supabase.co';
+const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdnaHdxbnF4cXVocnhjaGltZXJ3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIxMzMxMjgsImV4cCI6MjA5NzcwOTEyOH0.mWAotOVvwVDL9gGnhbjn6asL7lWnrKpwc390nTf6RAc';
+const BRAPI_TOKEN = 'ws5Toz7mQL85uqbuWcXTDo';
 
-// Cabeçalhos otimizados para evitar travamentos de CORS nas requisições nativas
 const SB_HDR = { 
   'apikey': SB_KEY,
   'Authorization': `Bearer ${SB_KEY}`,
@@ -31,6 +31,10 @@ export default function App() {
   const [modalId, setModalId] = useState('');
   const [modalTicker, setModalTicker] = useState('');
   const [modalNome, setModalNome] = useState('');
+  
+  // Estados para Sugestões Inteligentes da Brapi
+  const [sugestoes, setSugestoes] = useState([]);
+  const [loadingSugestoes, setLoadingSugestoes] = useState(false);
   
   // Notificações em tela
   const [toast, setToast] = useState({ show: false, message: '', type: 'info' });
@@ -70,43 +74,103 @@ export default function App() {
 
   useEffect(() => {
     carregarDados();
+    // Configurado para rodar de 15 em 15 minutos de forma otimizada
     const interval = setInterval(() => {
       executarCronVerificacao();
-    }, 20 * 60 * 1000);
+    }, 15 * 60 * 1000);
     return () => clearInterval(interval);
-  }, []);
+  }, [tickets]);
 
-  // ── BUSCA EM TEMPO REAL VIA API FINANCEIRA (BRAPI) ────────────────────────
+  // ── SISTEMA DE AUTO-SUGESTÃO E BUSCA DE TICKERS (BRAPI) ─────────────────────
+  useEffect(() => {
+    if (modalId || !modalTicker.trim() || modalTicker.length < 2) {
+      setSugestoes([]);
+      return;
+    }
+
+    // Debounce para evitar disparar requisições a cada tecla pressionada rapidamente
+    const delayDebounceFn = setTimeout(async () => {
+      setLoadingSugestoes(true);
+      try {
+        const query = modalTicker.trim().toUpperCase();
+        const res = await fetch(`https://brapi.dev/api/available?search=${query}&token=${BRAPI_TOKEN}`);
+        if (res.ok) {
+          const dados = await res.json();
+          // Brapi retorna uma lista contendo strings ou objetos com informações detalhadas
+          if (dados.stocks) {
+            // Filtrando apenas os principais resultados correspondentes para exibição rápida
+            setSugestoes(dados.stocks.slice(0, 5));
+          } else {
+            setSugestoes([]);
+          }
+        }
+      } catch (error) {
+        console.error("Erro ao buscar sugestões:", error);
+      } finally {
+        setLoadingSugestoes(false);
+      }
+    }, 400);
+
+    return () => clearTimeout(delayDebounceFn);
+  }, [modalTicker, modalId]);
+
+  // Executa uma consulta direta para buscar o nome longo da empresa selecionada
+  const selecionarSugestao = async (tickerSelecionado) => {
+    setModalTicker(tickerSelecionado);
+    setSugestoes([]);
+    setLoadingSugestoes(true);
+    try {
+      const res = await fetch(`https://brapi.dev/api/quote/${tickerSelecionado}?token=${BRAPI_TOKEN}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.results && data.results[0]) {
+          const nomeCompleto = data.results[0].longName || data.results[0].shortName || 'Empresa Cadastrada';
+          setModalNome(nomeCompleto);
+        }
+      }
+    } catch (e) {
+      console.error("Erro ao buscar nome oficial do ativo:", e);
+    } finally {
+      setLoadingSugestoes(false);
+    }
+  };
+
+  // ── REQUISIÇÃO MULTI-TICKET OTIMIZADA (1 CRÉDITO POR CONSULTA GLOBAL) ──────
   const executarCronVerificacao = async () => {
     if (tickets.length === 0) return;
 
     setIsCronRunning(true);
     try {
+      const listaTickers = tickets.map(t => t.ticker).join(',');
       const logsNovos = [];
+      let precosMercado = {};
+
+      try {
+        const resMercado = await fetch(`https://brapi.dev/api/quote/${listaTickers}?token=${BRAPI_TOKEN}`);
+        if (resMercado.ok) {
+          const dadosMercado = await resMercado.json();
+          if (dadosMercado.results) {
+            dadosMercado.results.forEach(ativo => {
+              if (ativo.symbol && ativo.regularMarketPrice) {
+                precosMercado[ativo.symbol.toUpperCase()] = parseFloat(ativo.regularMarketPrice);
+              }
+            });
+          }
+        }
+      } catch (error) {
+        console.error("Erro na busca de cotações múltiplas:", error);
+      }
 
       for (const t of tickets) {
-        let precoAtual = null;
-        let statusLog = "Atualizado via API";
+        let precoAtual = precosMercado[t.ticker];
+        let statusLog = "Atualizado via API (Lote)";
 
-        try {
-          const resMercado = await fetch(`https://brapi.dev/api/quote/${t.ticker}`);
-          if (resMercado.ok) {
-            const dadosMercado = await resMercado.json();
-            if (dadosMercado.results && dadosMercado.results[0]) {
-              precoAtual = parseFloat(dadosMercado.results[0].regularMarketPrice);
-            }
-          }
-        } catch (error) {
-          console.error("Erro na busca de cotações externas:", error);
-        }
-
-        // Fallback matemático se a API falhar ou o ativo for inválido
         if (!precoAtual || isNaN(precoAtual)) {
           const logsDoAtivo = logsHistoricos.filter(l => l.ticker === t.ticker);
           const ultimoLog = logsDoAtivo[logsDoAtivo.length - 1];
           const basePreco = ultimoLog ? parseFloat(ultimoLog.preco) : 50.00;
-          precoAtual = parseFloat((basePreco + (Math.random() * 0.6 - 0.3)).toFixed(2));
-          statusLog = "Ativo não listado (Simulado)";
+          precoAtual = parseFloat((basePreco + (Math.random() * 0.4 - 0.2)).toFixed(2));
+          statusLog = "Ativo não retornado (Simulado)";
         }
 
         logsNovos.push({
@@ -124,7 +188,7 @@ export default function App() {
       });
 
       if (!resPost.ok) throw new Error('Não foi possível gravar os logs no Supabase.');
-      showToast('Cotações de mercado sincronizadas.', 'success');
+      showToast('Cotações sincronizadas em lote (Otimização de Crédito Ativa).', 'success');
       await carregarDados();
     } catch (err) {
       showToast(err.message, 'error');
@@ -138,6 +202,7 @@ export default function App() {
     setModalId('');
     setModalTicker('');
     setModalNome('');
+    setSugestoes([]);
     setIsModalOpen(true);
   };
 
@@ -145,6 +210,7 @@ export default function App() {
     setModalId(ticket.id);
     setModalTicker(ticket.ticker);
     setModalNome(ticket.nome);
+    setSugestoes([]);
     setIsModalOpen(true);
   };
 
@@ -164,7 +230,7 @@ export default function App() {
           headers: SB_HDR,
           body: JSON.stringify({ nome: modalNome })
         });
-        if (!res.ok) throw new Error('Falha ao atualizar metadados do ativo.');
+        if (!res.ok) throw new Error('Falha ao atualizar dados do ativo.');
         showToast(`Ticket ${upperTicker} atualizado.`);
       } else {
         const res = await fetch(`${SB_URL}/rest/v1/finance_tickets`, {
@@ -172,25 +238,20 @@ export default function App() {
           headers: SB_HDR,
           body: JSON.stringify({ ticker: upperTicker, nome: modalNome })
         });
-        if (!res.ok) throw new Error('Ticket já cadastrado ou erro de segurança (RLS).');
-        showToast(`Ticket ${upperTicker} adicionado ao painel.`);
+        if (!res.ok) throw new Error('Erro ao inserir. Verifique as configurações do Supabase.');
+        showToast(`Ticket ${upperTicker} adicionado.`);
       }
 
       setIsModalOpen(false);
-      
-      const resRefresh = await fetch(`${SB_URL}/rest/v1/finance_tickets?order=ticker.asc`, { method: 'GET', headers: SB_HDR });
-      if (resRefresh.ok) {
-        const novosTickets = await resRefresh.json();
-        setTickets(novosTickets);
-        setTimeout(() => executarCronVerificacao(), 600);
-      }
+      await carregarDados();
+      setTimeout(() => executarCronVerificacao(), 600);
     } catch (err) {
       showToast(err.message, 'error');
     }
   };
 
   const excluirTicket = async (id, ticker) => {
-    if (!confirm(`Tem certeza que deseja parar de monitorar o ativo ${ticker}?`)) return;
+    if (!confirm(`Deseja parar de monitorar o ativo ${ticker}?`)) return;
     try {
       const res = await fetch(`${SB_URL}/rest/v1/finance_tickets?id=eq.${id}`, {
         method: 'DELETE',
@@ -204,7 +265,7 @@ export default function App() {
     }
   };
 
-  // ── CONFIGURAÇÃO DE DADOS PARA O GRÁFICO (CHART.JS) ────────────────────────
+  // ── CONFIGURAÇÃO DE DADOS PARA O GRÁFICO ───────────────────────────────────
   const prepararDadosGrafico = () => {
     const todosOsHorarios = [...new Set(logsHistoricos.map(l => 
       new Date(l.registrado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
@@ -266,7 +327,7 @@ export default function App() {
             </h1>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Sincronização Ativa • Último check: <span className="text-slate-200 font-mono">{lastCheckTime}</span>
+            Sincronização Avançada (15 min) • Check: <span className="text-slate-200 font-mono">{lastCheckTime}</span>
           </p>
         </div>
 
@@ -283,7 +344,7 @@ export default function App() {
             className="flex-1 md:flex-none px-4 py-2.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-xs font-semibold text-slate-300 rounded-xl shadow-lg transition-colors flex items-center justify-center gap-2"
           >
             <span className={`${isCronRunning ? 'animate-spin' : ''}`}>↻</span>
-            {isCronRunning ? 'Buscando Mercado...' : 'Forçar Varredura'}
+            {isCronRunning ? 'Buscando...' : 'Forçar Varredura'}
           </button>
         </div>
       </header>
@@ -315,8 +376,8 @@ export default function App() {
                         <p className="text-xs text-slate-400 line-clamp-1">{t.nome}</p>
                       </div>
                       <div className="flex gap-1">
-                        <button onClick={() => abrirModalEdicao(t)} className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-slate-200 transition-colors text-xs" title="Editar">✏️</button>
-                        <button onClick={() => excluirTicket(t.id, t.ticker)} className="p-1.5 hover:bg-red-950/40 rounded-lg text-slate-400 hover:text-red-400 transition-colors text-xs" title="Remover">✕</button>
+                        <button onClick={() => abrirModalEdicao(t)} className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-slate-200 transition-colors text-xs">✏️</button>
+                        <button onClick={() => excluirTicket(t.id, t.ticker)} className="p-1.5 hover:bg-red-950/40 rounded-lg text-slate-400 hover:text-red-400 transition-colors text-xs">✕</button>
                       </div>
                     </div>
 
@@ -342,15 +403,13 @@ export default function App() {
         </section>
 
         <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-2xl">
-          <h2 className="text-sm font-semibold tracking-wide text-slate-200 mb-4 flex items-center gap-2">
-            <span>📈</span> Tendência Temporal das Cotações
-          </h2>
+          <h2 className="text-sm font-semibold tracking-wide text-slate-200 mb-4">📈 Tendência Temporal (Janela de 15 min)</h2>
           <div className="h-72 w-full">
             {logsHistoricos.length > 0 ? (
               <Line data={prepararDadosGrafico()} options={opcoesGrafico} />
             ) : (
               <div className="h-full flex items-center justify-center text-xs text-slate-500">
-                Aguardando logs históricos para renderização analítica do gráfico.
+                Aguardando logs históricos para renderizar o gráfico.
               </div>
             )}
           </div>
@@ -358,9 +417,7 @@ export default function App() {
 
         <section className="bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden">
           <div className="p-5 border-b border-slate-800 flex justify-between items-center">
-            <h2 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
-              <span>📋</span> Registro de Logs e Movimentações do Dia
-            </h2>
+            <h2 className="text-sm font-semibold text-slate-200">📋 Logs Coletados</h2>
             <span className="text-[11px] font-mono px-2 py-0.5 bg-slate-800 border border-slate-700 text-slate-400 rounded-full">
               {logsHistoricos.length} logs totais
             </span>
@@ -368,9 +425,7 @@ export default function App() {
 
           <div className="overflow-x-auto max-h-96">
             {logsHistoricos.length === 0 ? (
-              <div className="p-8 text-center text-slate-500 text-xs">
-                Nenhum log gravado até ao momento.
-              </div>
+              <div className="p-8 text-center text-slate-500 text-xs">Nenhum log gravado até ao momento.</div>
             ) : (
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
@@ -382,22 +437,16 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
-                  {[...logsHistoricos].reverse().slice(0, 50).map(log => {
-                    const statusNoChange = log.status.includes("Simulado") || log.status.includes("Sem alterações");
+                  {[...logsHistoricos].reverse().slice(0, 50).map((log, i) => {
+                    const statusNoChange = log.status.includes("Simulado");
                     return (
-                      <tr key={log.id} className="hover:bg-slate-800/30 transition-colors">
-                        <td className="p-4 text-slate-400 font-mono">
-                          {new Date(log.registrado_em).toLocaleString('pt-BR')}
-                        </td>
+                      <tr key={i} className="hover:bg-slate-800/30 transition-colors">
+                        <td className="p-4 text-slate-400 font-mono">{new Date(log.registrado_em).toLocaleString('pt-BR')}</td>
                         <td className="p-4 font-bold text-blue-400">{log.ticker}</td>
-                        <td className="p-4 font-mono font-medium text-white">
-                          R$ {parseFloat(log.preco).toFixed(2).replace('.', ',')}
-                        </td>
+                        <td className="p-4 font-mono font-medium text-white">R$ {parseFloat(log.preco).toFixed(2).replace('.', ',')}</td>
                         <td className="p-4">
                           <span className={`inline-flex items-center px-2 py-0.5 text-[10px] font-semibold rounded-full border ${
-                            statusNoChange 
-                              ? 'bg-slate-800 text-slate-400 border-slate-700' 
-                              : 'bg-emerald-950/60 text-emerald-400 border-emerald-900'
+                            statusNoChange ? 'bg-slate-800 text-slate-400 border-slate-700' : 'bg-emerald-950/60 text-emerald-400 border-emerald-900'
                           }`}>
                             {log.status}
                           </span>
@@ -412,32 +461,58 @@ export default function App() {
         </section>
       </main>
 
-      {/* MODAL MODERNO */}
+      {/* MODAL COM SUGESTÕES INTELIGENTES E PREENCHIMENTO AUTOMÁTICO */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl relative overflow-visible">
             <h3 className="text-base font-bold text-white mb-4">
-              {modalId ? '✏️ Ajustar Configurações do Ticket' : '➕ Configurar Novo Ativo para Monitorização'}
+              {modalId ? '✏️ Ajustar Configurações' : '➕ Configurar Novo Ativo'}
             </h3>
             
             <form onSubmit={salvarTicket} className="space-y-4">
-              <div>
+              <div className="relative">
                 <label className="block text-[11px] font-semibold uppercase text-slate-400 mb-1">Código do Ativo (Ticker)</label>
-                <input 
-                  type="text" 
-                  placeholder="Ex: PETR4 ou AAPL" 
-                  disabled={!!modalId}
-                  value={modalTicker}
-                  onChange={e => setModalTicker(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500 disabled:opacity-50 uppercase tracking-widest"
-                />
+                <div className="relative">
+                  <input 
+                    type="text" 
+                    placeholder="Ex: PETR4 ou VALE3" 
+                    disabled={!!modalId}
+                    value={modalTicker}
+                    onChange={e => setModalTicker(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500 disabled:opacity-50 uppercase tracking-widest block"
+                  />
+                  {loadingSugestoes && (
+                    <span className="absolute right-3 top-2.5 text-[10px] text-slate-500 animate-pulse">Buscando...</span>
+                  )}
+                </div>
+
+                {/* Caixa Suspensa contendo as Sugestões Predizíveis da Brapi */}
+                {sugestoes.length > 0 && (
+                  <div className="absolute z-50 left-0 right-0 mt-1 bg-slate-950 border border-slate-800 rounded-xl shadow-2xl max-h-48 overflow-y-auto divide-y divide-slate-800/50">
+                    {sugestoes.map((item, index) => {
+                      const tickerStr = typeof item === 'string' ? item : item.stock || item.symbol;
+                      if (!tickerStr) return null;
+                      return (
+                        <button
+                          key={index}
+                          type="button"
+                          onClick={() => selecionarSugestao(tickerStr)}
+                          className="w-full text-left px-4 py-2.5 text-xs text-slate-300 hover:bg-slate-800 hover:text-white transition-colors flex justify-between items-center"
+                        >
+                          <span className="font-bold text-blue-400 tracking-wider font-mono">{tickerStr}</span>
+                          <span className="text-[10px] text-slate-500">Selecionar ativo ➔</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
               <div>
-                <label className="block text-[11px] font-semibold uppercase text-slate-400 mb-1">Nome da Empresa / Descrição</label>
+                <label className="block text-[11px] font-semibold uppercase text-slate-400 mb-1">Nome da Empresa</label>
                 <input 
                   type="text" 
-                  placeholder="Ex: Petrobras S.A." 
+                  placeholder="Selecione um ticker acima para preencher automaticamente" 
                   value={modalNome}
                   onChange={e => setModalNome(e.target.value)}
                   className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500"
@@ -445,19 +520,8 @@ export default function App() {
               </div>
 
               <div className="flex justify-end gap-2 pt-4 border-t border-slate-800">
-                <button 
-                  type="button" 
-                  onClick={() => setIsModalOpen(false)}
-                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-xl transition-colors"
-                >
-                  Cancelar
-                </button>
-                <button 
-                  type="submit"
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-xl transition-colors"
-                >
-                  Salvar Alterações
-                </button>
+                <button type="button" onClick={() => setIsModalOpen(false)} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-xl">Cancelar</button>
+                <button type="submit" className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-xl">Salvar</button>
               </div>
             </form>
           </div>
