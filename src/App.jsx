@@ -36,9 +36,11 @@ export default function App() {
   const [sugestoes, setSugestoes] = useState([]);
   const [loadingSugestoes, setLoadingSugestoes] = useState(false);
   
-  // ── ESTADOS DE FILTRO E COMPARAÇÃO DO HISTÓRICO DE LOGS ─────────────────────
-  const [dataFiltro, setDataFiltro] = useState(new Date().toISOString().split('T')[0]); 
-  const [ativosSelecionados, setAtivosSelecionados] = useState([]); // Array para suportar múltiplos ativos no comparador
+  // ── ESTADOS DE FILTRO POR PERÍODO (DATA INÍCIO E FIM) E COMPARAÇÃO ──────────
+  const hojeStr = new Date().toISOString().split('T')[0];
+  const [dataInicio, setDataInicio] = useState(hojeStr);
+  const [dataFim, setDataFim] = useState(hojeStr);
+  const [ativosSelecionados, setAtivosSelecionados] = useState([]); 
   
   // Notificações
   const [toast, setToast] = useState({ show: false, message: '', type: 'info' });
@@ -84,7 +86,7 @@ export default function App() {
     return () => clearInterval(interval);
   }, [tickets]);
 
-  // ── AUTO-SUGESTÃO DE TICKERS COM SANITIZAÇÃO ───────────────────────────────
+  // ── AUTO-SUGESTÃO DE TICKERS ───────────────────────────────────────────────
   useEffect(() => {
     if (modalId || !modalTicker.trim() || modalTicker.length < 2) {
       setSugestoes([]);
@@ -94,7 +96,7 @@ export default function App() {
     const delayDebounceFn = setTimeout(async () => {
       setLoadingSugestoes(true);
       try {
-        const query = modalTicker.trim().toUpperCase(); // Garante CXSE3 e SAPR4 limpos
+        const query = modalTicker.trim().toUpperCase();
         const res = await fetch(`https://brapi.dev/api/available?search=${query}&token=${BRAPI_TOKEN}`);
         if (res.ok) {
           const dados = await res.json();
@@ -135,12 +137,13 @@ export default function App() {
     }
   };
 
-  // ── REQUISIÇÃO MULTI-TICKET OTIMIZADA ──────────────────────────────────────
+  // ── REQUISIÇÃO MULTI-TICKET OTIMIZADA COM COLETOR DE PRECISÃO ──────────────
   const executarCronVerificacao = async () => {
     if (tickets.length === 0) return;
 
     setIsCronRunning(true);
     try {
+      // Formata a lista limpando completamente os espaços e quebras
       const listaTickers = tickets.map(t => t.ticker.toUpperCase().trim()).join(',');
       const logsNovos = [];
       let precosMercado = {};
@@ -151,8 +154,11 @@ export default function App() {
           const dadosMercado = await resMercado.json();
           if (dadosMercado.results) {
             dadosMercado.results.forEach(ativo => {
-              if (ativo.symbol && ativo.regularMarketPrice) {
-                precosMercado[ativo.symbol.toUpperCase().trim()] = parseFloat(ativo.regularMarketPrice);
+              if (ativo.symbol) {
+                const sym = ativo.symbol.toUpperCase().trim();
+                if (ativo.regularMarketPrice !== undefined && ativo.regularMarketPrice !== null) {
+                  precosMercado[sym] = parseFloat(ativo.regularMarketPrice);
+                }
               }
             });
           }
@@ -161,17 +167,35 @@ export default function App() {
         console.error("Erro na busca de cotações múltiplas:", error);
       }
 
+      // Mapeia e valida se o preço de fato retornou para CXSE3, SAPR4, etc.
       for (const t of tickets) {
         const tickerChave = t.ticker.toUpperCase().trim();
         let precoAtual = precosMercado[tickerChave];
         let statusLog = "Atualizado via API (Lote)";
 
+        // Fallback Secundário de Segurança: Se não veio no lote, tenta uma chamada exclusiva individual
+        if (!precoAtual || isNaN(precoAtual)) {
+          try {
+            const resIndividual = await fetch(`https://brapi.dev/api/quote/${tickerChave}?token=${BRAPI_TOKEN}`);
+            if (resIndividual.ok) {
+              const dadosIndiv = await resIndividual.json();
+              if (dadosIndiv.results && dadosIndiv.results[0] && dadosIndiv.results[0].regularMarketPrice) {
+                precoAtual = parseFloat(dadosIndiv.results[0].regularMarketPrice);
+                statusLog = "Atualizado via API (Individual)";
+              }
+            }
+          } catch (errInd) {
+            console.error(`Erro no Fallback individual para ${tickerChave}:`, errInd);
+          }
+        }
+
+        // Fallback Final Simulado apenas se a internet cair ou o ativo não existir na API
         if (!precoAtual || isNaN(precoAtual)) {
           const logsDoAtivo = logsHistoricos.filter(l => l.ticker.toUpperCase() === tickerChave);
           const ultimoLog = logsDoAtivo[logsDoAtivo.length - 1];
-          const basePreco = ultimoLog ? parseFloat(ultimoLog.preco) : 50.00;
-          precoAtual = parseFloat((basePreco + (Math.random() * 0.4 - 0.2)).toFixed(2));
-          statusLog = "Ativo não retornado (Simulado)";
+          const basePreco = ultimoLog ? parseFloat(ultimoLog.preco) : 25.00;
+          precoAtual = parseFloat((basePreco + (Math.random() * 0.2 - 0.1)).toFixed(2));
+          statusLog = "Ativo não encontrado (Simulado)";
         }
 
         logsNovos.push({
@@ -266,7 +290,7 @@ export default function App() {
     }
   };
 
-  // ── CONTROLADOR DE SELEÇÃO MULTIPLA DO COMPARADOR ──────────────────────────
+  // ── CONTROLADOR DE SELEÇÃO MULTIPLA ────────────────────────────────────────
   const alternarSelecaoAtivo = (ticker) => {
     const t = ticker.toUpperCase();
     if (ativosSelecionados.includes(t)) {
@@ -276,25 +300,27 @@ export default function App() {
     }
   };
 
-  // ── FILTRAGEM DINÂMICA DE LOGS POR DATA E ATIVOS SELECIONADOS ──────────────
-  const logsFiltradosPorData = logsHistoricos.filter(log => {
+  // ── FILTRAGEM POR PERÍODO DE DATA (INÍCIO E FIM) ───────────────────────────
+  const logsFiltradosPorPeriodo = logsHistoricos.filter(log => {
     const dataLogStr = log.registrado_em.split('T')[0];
-    return dataLogStr === dataFiltro;
+    return dataLogStr >= dataInicio && dataLogStr <= dataFim;
   });
 
-  const logsFinaisExibição = logsFiltradosPorData.filter(log => {
-    if (ativosSelecionados.length === 0) return true; // Se nenhum tiver marcado, mostra tudo do dia
+  const logsFinaisExibição = logsFiltradosPorPeriodo.filter(log => {
+    if (ativosSelecionados.length === 0) return true;
     return ativosSelecionados.includes(log.ticker.toUpperCase());
   });
 
-  // ── PREPARAÇÃO DO GRÁFICO COMPARATIVO POR DIA ──────────────────────────────
+  // ── PREPARAÇÃO DO GRÁFICO COMPARATIVO POR INTERVALO DE TEMPO ───────────────
   const prepararDadosGrafico = () => {
-    // Extrai os horários únicos ordenados do dia selecionado
-    const todosOsHorarios = [...new Set(logsFinaisExibição.map(l => 
-      new Date(l.registrado_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
-    ))];
+    // Para múltiplos dias, exibimos a data simplificada e o horário no Eixo X
+    const todosOsHorarios = [...new Set(logsFinaisExibição.map(l => {
+      const dataObj = new Date(l.registrado_em);
+      const d = dataObj.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+      const h = dataObj.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+      return `${d} ${h}`;
+    }))];
 
-    // Identifica quais ativos devem figurar no gráfico baseado nas escolhas
     const tickersParaPlotar = ativosSelecionados.length > 0 
       ? ativosSelecionados 
       : [...new Set(logsFinaisExibição.map(l => l.ticker.toUpperCase()))];
@@ -309,12 +335,12 @@ export default function App() {
         label: ticker,
         data: logsDoAtivo.map(l => parseFloat(l.preco)),
         borderColor: cor,
-        backgroundColor: cor + '08',
-        borderWidth: 2.5,
-        tension: 0.2,
-        pointRadius: 3,
-        pointHoverRadius: 6,
-        fill: true,
+        backgroundColor: cor + '04',
+        borderWidth: 2,
+        tension: 0.1,
+        pointRadius: 2,
+        pointHoverRadius: 5,
+        fill: false,
       };
     });
 
@@ -329,8 +355,8 @@ export default function App() {
       tooltip: { padding: 12, cornerRadius: 8 }
     },
     scales: {
-      x: { grid: { color: '#374151', drawTicks: false }, ticks: { color: '#9ca3af' } },
-      y: { grid: { color: '#374151', drawTicks: false }, ticks: { color: '#9ca3af', callback: v => 'R$ ' + v.toFixed(2) } }
+      x: { grid: { color: '#1e293b', drawTicks: false }, ticks: { color: '#9ca3af', maxRotation: 45, size: 10 } },
+      y: { grid: { color: '#1e293b', drawTicks: false }, ticks: { color: '#9ca3af', callback: v => 'R$ ' + v.toFixed(2) } }
     }
   };
 
@@ -354,7 +380,7 @@ export default function App() {
             </h1>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Monitoramento de Alta Precisão (15 min) • Sincronizado às: <span className="text-slate-200 font-mono">{lastCheckTime}</span>
+            Monitoramento Homologado • Último Check: <span className="text-slate-200 font-mono">{lastCheckTime}</span>
           </p>
         </div>
 
@@ -371,18 +397,18 @@ export default function App() {
             className="flex-1 md:flex-none px-4 py-2.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-xs font-semibold text-slate-300 rounded-xl shadow-lg transition-colors flex items-center justify-center gap-2"
           >
             <span className={`${isCronRunning ? 'animate-spin' : ''}`}>↻</span>
-            {isCronRunning ? 'Buscando...' : 'Forçar Varredura'}
+            {isCronRunning ? 'Sincronizando...' : 'Forçar Varredura'}
           </button>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto space-y-6">
-        {/* CARDS DOS ATIVOS ATUAIS */}
+        {/* CARDS REAL-TIME */}
         <section>
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-4">Painel em Tempo Real</h2>
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-4">Painel Atual de Ativos</h2>
           {tickets.length === 0 ? (
             <div className="p-8 text-center border border-dashed border-slate-800 rounded-2xl text-slate-500 text-xs">
-              Nenhum ticket cadastrado no momento.
+              Nenhum ativo configurado.
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -413,28 +439,38 @@ export default function App() {
           )}
         </section>
 
-        {/* CONTROLES DE HISTÓRICO AVANÇADO E COMPARADOR */}
+        {/* HISTÓRICO AVANÇADO POR INTERVALO TEMPORAL COM FILTRO COMBINADO */}
         <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-2xl space-y-6">
           <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 border-b border-slate-800 pb-4">
             <div>
-              <h2 className="text-base font-bold text-slate-100 flex items-center gap-2">🎛️ Histórico e Comparador Avançado</h2>
-              <p className="text-xs text-slate-400 mt-0.5">Navegue por datas e marque múltiplos ativos para comparar as oscilações simultaneamente.</p>
+              <h2 className="text-base font-bold text-slate-100 flex items-center gap-2">🎛️ Comparador por Intervalo de Datas</h2>
+              <p className="text-xs text-slate-400 mt-0.5">Selecione datas de início/fim e marque os ativos para cruzar dados e analisar tendências históricas completas.</p>
             </div>
             
-            <div className="flex items-center gap-3 w-full lg:w-auto">
-              <label className="text-xs font-semibold text-slate-400 whitespace-nowrap">Navegar por Dia:</label>
-              <input 
-                type="date"
-                value={dataFiltro}
-                onChange={e => setDataFiltro(e.target.value)}
-                className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500 font-mono"
-              />
+            <div className="flex flex-wrap items-center gap-4 w-full lg:w-auto">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold text-slate-400">Início:</span>
+                <input 
+                  type="date"
+                  value={dataInicio}
+                  onChange={e => setDataInicio(e.target.value)}
+                  className="px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500 font-mono"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold text-slate-400">Fim:</span>
+                <input 
+                  type="date"
+                  value={dataFim}
+                  onChange={e => setDataFim(e.target.value)}
+                  className="px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500 font-mono"
+                />
+              </div>
             </div>
           </div>
 
-          {/* CHECKBOXES DE SELEÇÃO MULTIPLA / FILTRO DE ATIVO */}
           <div>
-            <span className="block text-[11px] font-bold uppercase text-slate-400 mb-2">Ativos Disponíveis para Comparação:</span>
+            <span className="block text-[11px] font-bold uppercase text-slate-400 mb-2">Selecione os ativos para comparar no gráfico:</span>
             <div className="flex flex-wrap gap-2">
               {tickets.map(t => {
                 const ativoNome = t.ticker.toUpperCase();
@@ -459,54 +495,53 @@ export default function App() {
                   onClick={() => setAtivosSelecionados([])}
                   className="px-3 py-1.5 text-xs font-bold text-red-400 bg-red-950/20 border border-red-900 rounded-xl hover:bg-red-950/40"
                 >
-                  Limpar Comparador
+                  Mostrar Todos
                 </button>
               )}
             </div>
           </div>
 
-          {/* GRÁFICO PLOTADO BASEADO NO FILTRO SELECIONADO */}
           <div className="h-80 w-full pt-2">
             {logsFinaisExibição.length > 0 ? (
               <Line data={prepararDadosGrafico()} options={opcoesGrafico} />
             ) : (
               <div className="h-full flex flex-col items-center justify-center text-xs text-slate-500 border border-dashed border-slate-800 rounded-xl p-8">
-                <span>Nenhum log de cotação registrado no dia {new Date(dataFiltro + 'T12:00:00').toLocaleDateString('pt-BR')}.</span>
-                <span className="text-[10px] mt-1 text-slate-600">Dica: Selecione um dia em que o painel esteve ativo e monitorando.</span>
+                <span>Nenhum log encontrado para o período selecionado.</span>
+                <span className="text-[10px] mt-1 text-slate-600">Garanta que as datas coincidem com dias de pregão monitorados pelo app.</span>
               </div>
             )}
           </div>
         </section>
 
-        {/* TABELA DETALHADA DO DIA SELECIONADO */}
+        {/* TABELA DE REGISTROS DO PERÍODO */}
         <section className="bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden">
           <div className="p-5 border-b border-slate-800 flex justify-between items-center">
-            <h2 className="text-sm font-semibold text-slate-200">📋 Registros Filtrados ({new Date(dataFiltro + 'T12:00:00').toLocaleDateString('pt-BR')})</h2>
+            <h2 className="text-sm font-semibold text-slate-200">📋 Amostras do Intervalo Temporal</h2>
             <span className="text-[11px] font-mono px-2 py-0.5 bg-slate-800 border border-slate-700 text-slate-400 rounded-full">
-              {logsFinaisExibição.length} capturas encontradas
+              {logsFinaisExibição.length} logs listados
             </span>
           </div>
 
           <div className="overflow-x-auto max-h-80">
             {logsFinaisExibição.length === 0 ? (
-              <div className="p-8 text-center text-slate-500 text-xs">Nenhum registro correspondente aos filtros aplicados.</div>
+              <div className="p-8 text-center text-slate-500 text-xs">Sem registros correspondentes.</div>
             ) : (
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="bg-slate-950 border-b border-slate-800 text-slate-400 font-medium">
-                    <th className="p-4 font-semibold uppercase tracking-wider text-[10px]">Hora do Registro</th>
+                    <th className="p-4 font-semibold uppercase tracking-wider text-[10px]">Data e Hora</th>
                     <th className="p-4 font-semibold uppercase tracking-wider text-[10px]">Ativo</th>
                     <th className="p-4 font-semibold uppercase tracking-wider text-[10px]">Cotação</th>
-                    <th className="p-4 font-semibold uppercase tracking-wider text-[10px]">Origem / Status</th>
+                    <th className="p-4 font-semibold uppercase tracking-wider text-[10px]">Canal / Status</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
-                  {[...logsFinaisExibição].reverse().map((log, i) => {
+                  {[...logsFinaisExibição].reverse().slice(0, 100).map((log, i) => {
                     const statusNoChange = log.status.includes("Simulado");
                     return (
                       <tr key={i} className="hover:bg-slate-800/30 transition-colors">
                         <td className="p-4 text-slate-400 font-mono">
-                          {new Date(log.registrado_em).toLocaleTimeString('pt-BR')}
+                          {new Date(log.registrado_em).toLocaleString('pt-BR')}
                         </td>
                         <td className="p-4 font-bold text-blue-400">{log.ticker.toUpperCase()}</td>
                         <td className="p-4 font-mono font-medium text-white">R$ {parseFloat(log.preco).toFixed(2).replace('.', ',')}</td>
@@ -527,7 +562,7 @@ export default function App() {
         </section>
       </main>
 
-      {/* MODAL COM SUGESTÕES INTELIGENTES E PREENCHIMENTO AUTOMÁTICO */}
+      {/* MODAL CADASTRO */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl relative overflow-visible">
