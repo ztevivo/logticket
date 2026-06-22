@@ -78,17 +78,20 @@ export default function App() {
     }
   };
 
+  // BLINDADO: Carregamento inicial e cronômetro de 15 min isolados com array [] vazio
   useEffect(() => {
     carregarDados();
+    
     const interval = setInterval(() => {
       executarCronVerificacao();
     }, 15 * 60 * 1000);
+    
     return () => clearInterval(interval);
-  }, [tickets]);
+  }, []);
 
-  // ── AUTO-SUGESTÃO DE TICKERS ───────────────────────────────────────────────
+  // BLINDADO: Auto-sugestão com limite de caracteres e proteção Debounce aumentada para 600ms
   useEffect(() => {
-    if (modalId || !modalTicker.trim() || modalTicker.length < 2) {
+    if (modalId || !modalTicker.trim() || modalTicker.trim().length < 2) {
       setSugestoes([]);
       return;
     }
@@ -111,7 +114,7 @@ export default function App() {
       } finally {
         setLoadingSugestoes(false);
       }
-    }, 400);
+    }, 600);
 
     return () => clearTimeout(delayDebounceFn);
   }, [modalTicker, modalId]);
@@ -137,14 +140,22 @@ export default function App() {
     }
   };
 
-  // ── REQUISIÇÃO MULTI-TICKET OTIMIZADA COM COLETOR DE PRECISÃO ──────────────
+  // ── REQUISIÇÃO MULTI-TICKET COM STRATEGY DE CORREÇÃO DE PREÇO (CXSE3, SAPR4) ─
   const executarCronVerificacao = async () => {
-    if (tickets.length === 0) return;
+    // Busca o estado mais atualizado de tickets diretamente para a varredura
+    let ticketsAlvo = tickets;
+    if (ticketsAlvo.length === 0) {
+      try {
+        const res = await fetch(`${SB_URL}/rest/v1/finance_tickets`, { method: 'GET', headers: SB_HDR });
+        if (res.ok) ticketsAlvo = await res.json();
+      } catch (e) { console.error(e); }
+    }
+    
+    if (ticketsAlvo.length === 0) return;
 
     setIsCronRunning(true);
     try {
-      // Formata a lista limpando completamente os espaços e quebras
-      const listaTickers = tickets.map(t => t.ticker.toUpperCase().trim()).join(',');
+      const listaTickers = ticketsAlvo.map(t => t.ticker.toUpperCase().trim()).join(',');
       const logsNovos = [];
       let precosMercado = {};
 
@@ -167,13 +178,12 @@ export default function App() {
         console.error("Erro na busca de cotações múltiplas:", error);
       }
 
-      // Mapeia e valida se o preço de fato retornou para CXSE3, SAPR4, etc.
-      for (const t of tickets) {
+      for (const t of ticketsAlvo) {
         const tickerChave = t.ticker.toUpperCase().trim();
         let precoAtual = precosMercado[tickerChave];
         let statusLog = "Atualizado via API (Lote)";
 
-        // Fallback Secundário de Segurança: Se não veio no lote, tenta uma chamada exclusiva individual
+        // Fallback Secundário de Segurança se sumir do lote
         if (!precoAtual || isNaN(precoAtual)) {
           try {
             const resIndividual = await fetch(`https://brapi.dev/api/quote/${tickerChave}?token=${BRAPI_TOKEN}`);
@@ -189,7 +199,7 @@ export default function App() {
           }
         }
 
-        // Fallback Final Simulado apenas se a internet cair ou o ativo não existir na API
+        // Fallback Final Simulado estrito
         if (!precoAtual || isNaN(precoAtual)) {
           const logsDoAtivo = logsHistoricos.filter(l => l.ticker.toUpperCase() === tickerChave);
           const ultimoLog = logsDoAtivo[logsDoAtivo.length - 1];
@@ -269,7 +279,6 @@ export default function App() {
 
       setIsModalOpen(false);
       await carregarDados();
-      setTimeout(() => executarCronVerificacao(), 600);
     } catch (err) {
       showToast(err.message, 'error');
     }
@@ -313,7 +322,6 @@ export default function App() {
 
   // ── PREPARAÇÃO DO GRÁFICO COMPARATIVO POR INTERVALO DE TEMPO ───────────────
   const prepararDadosGrafico = () => {
-    // Para múltiplos dias, exibimos a data simplificada e o horário no Eixo X
     const todosOsHorarios = [...new Set(logsFinaisExibição.map(l => {
       const dataObj = new Date(l.registrado_em);
       const d = dataObj.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
@@ -439,7 +447,7 @@ export default function App() {
           )}
         </section>
 
-        {/* HISTÓRICO AVANÇADO POR INTERVALO TEMPORAL COM FILTRO COMBINADO */}
+        {/* HISTÓRICO AVANÇADO POR INTERVALO TEMPORAL */}
         <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-2xl space-y-6">
           <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 border-b border-slate-800 pb-4">
             <div>
@@ -562,7 +570,7 @@ export default function App() {
         </section>
       </main>
 
-      {/* MODAL CADASTRO */}
+      {/* MODAL CADASTRO COM AUTOCOMPLETE BLINDADO */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl relative overflow-visible">
