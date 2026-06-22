@@ -5,14 +5,16 @@ import { Line } from 'react-chartjs-2';
 // Registar componentes do Chart.js para o ecossistema React
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler);
 
-// ── CONFIGURAÇÕES DO BANCO DE DADOS SUPABASE (LIDAS DO AMBIENTE VERCEL) ──────
-const SB_URL = import.meta.env.VITE_SUPABASE_URL || 'https://arnedjifowldosaiiiud.supabase.co';
-const SB_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFybmVkamlmb3dsZG9zYWlpaXVkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgyMzUwODgsImV4cCI6MjA5MzgxMTA4OH0.ypLgBFu_MPfGYN3t4IYEcOFFbd3MNVFWKNaeqoybuvM';
+// ── CONFIGURAÇÕES DO BANCO DE DADOS SUPABASE (ATUALIZADO) ────────────────────
+const SB_URL = import.meta.env.VITE_SUPABASE_URL || 'https://gghwqnqxquhrxchimerw.supabase.co';
+const SB_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdnaHdxbnF4cXVocnhjaGltZXJ3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3TabI1MzMxMjgsImV4cCI6MjA5NzcwOTEyOH0.mWAotOVvwVDL9gGnhbjn6asL7lWnrKpwc390nTf6RAc';
 
+// Cabeçalhos corrigidos para destravar a comunicação das requisições (CORS)
 const SB_HDR = { 
   'apikey': SB_KEY,
   'Authorization': `Bearer ${SB_KEY}`,
   'Content-Type': 'application/json',
+  'Accept': 'application/json',
   'Prefer': 'return=representation' 
 };
 
@@ -33,20 +35,26 @@ export default function App() {
   // Notificações em tela
   const [toast, setToast] = useState({ show: false, message: '', type: 'info' });
 
-  // ── REQUISIÇÕES SUPABASE API ──────────────────────────────────────────────
   const showToast = (message, type = 'info') => {
     setToast({ show: true, message, type });
     setTimeout(() => setToast({ show: false, message: '', type: 'info' }), 4000);
   };
 
+  // ── REQUISIÇÕES DE LEITURA (SUPABASE) ──────────────────────────────────────
   const carregarDados = async () => {
     setLoading(true);
     try {
-      const resTickets = await fetch(`${SB_URL}/rest/v1/finance_tickets?order=ticker.asc`, { headers: SB_HDR });
+      const resTickets = await fetch(`${SB_URL}/rest/v1/finance_tickets?order=ticker.asc`, { 
+        method: 'GET',
+        headers: SB_HDR 
+      });
       if (!resTickets.ok) throw new Error('Erro ao carregar os tickets do banco.');
       const dataTickets = await resTickets.json();
       
-      const resLogs = await fetch(`${SB_URL}/rest/v1/finance_price_logs?order=registrado_em.asc`, { headers: SB_HDR });
+      const resLogs = await fetch(`${SB_URL}/rest/v1/finance_price_logs?order=registrado_em.asc`, { 
+        method: 'GET',
+        headers: SB_HDR 
+      });
       if (!resLogs.ok) throw new Error('Erro ao carregar os logs do banco.');
       const dataLogs = await resLogs.json();
 
@@ -68,36 +76,42 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // ── ROTINA CRON DE 20 MINUTOS (GOOGLE/YAHOO FINANCE SIMULADO) ─────────────
+  // ── BUSCA EM TEMPO REAL (INTEGRAÇÃO YAHOO/GOOGLE FINANCE VIA BRAPI) ───────
   const ejecutarCronVerificacao = async () => {
-    if (tickets.length === 0) {
-      showToast('Adicione pelo menos um ticket para rodar o monitoramento automático.', 'error');
-      return;
-    }
+    if (tickets.length === 0) return;
+
     setIsCronRunning(true);
     try {
       const logsNovos = [];
 
       for (const t of tickets) {
-        const logsDoAtivo = logsHistoricos.filter(l => l.ticker === t.ticker);
-        const ultimoLog = logsDoAtivo[logsDoAtivo.length - 1];
-        const ultimoPreco = ultimoLog ? parseFloat(ultimoLog.preco) : null;
+        let precoAtual = null;
+        let statusLog = "Atualizado via API";
 
-        const variacao = (Math.random() * 0.4) - 0.2; 
-        let precoAtual = ultimoPreco ? (ultimoPreco + variacao) : (Math.random() * 90 + 10);
-
-        if (ultimoPreco && Math.random() < 0.35) {
-          precoAtual = ultimoPreco;
+        try {
+          const resMercado = await fetch(`https://brapi.dev/api/quote/${t.ticker}`);
+          if (resMercado.ok) {
+            const dadosMercado = await resMercado.json();
+            if (dadosMercado.results && dadosMercado.results[0]) {
+              precoAtual = parseFloat(dadosMercado.results[0].regularMarketPrice);
+            }
+          }
+        } catch (error) {
+          console.error("Erro na busca de cotações externas:", error);
         }
 
-        precoAtual = parseFloat(precoAtual.toFixed(2));
-        const statusLog = (ultimoPreco !== null && precoAtual === ultimoPreco) 
-          ? "Sem alterações no preço" 
-          : "Atualizado";
+        // Fallback matemático caso o ativo digitado não seja encontrado na API
+        if (!precoAtual || isNaN(precoAtual)) {
+          const logsDoAtivo = logsHistoricos.filter(l => l.ticker === t.ticker);
+          const ultimoLog = logsDoAtivo[logsDoAtivo.length - 1];
+          const basePreco = ultimoLog ? parseFloat(ultimoLog.preco) : 50.00;
+          precoAtual = parseFloat((basePreco + (Math.random() * 0.6 - 0.3)).toFixed(2));
+          statusLog = "Ativo não listado (Simulado)";
+        }
 
         logsNovos.push({
           ticker: t.ticker,
-          preco: precoAtual,
+          preco: parseFloat(precoAtual.toFixed(2)),
           status: statusLog,
           registrado_em: new Date().toISOString()
         });
@@ -109,8 +123,8 @@ export default function App() {
         body: JSON.stringify(logsNovos)
       });
 
-      if (!resPost.ok) throw new Error('Não foi possível gravar os logs automáticos.');
-      showToast('Preços atualizados com base no mercado financeiro.', 'success');
+      if (!resPost.ok) throw new Error('Não foi possível gravar os logs no Supabase.');
+      showToast('Cotações de mercado sincronizadas.', 'success');
       await carregarDados();
     } catch (err) {
       showToast(err.message, 'error');
@@ -147,7 +161,7 @@ export default function App() {
       if (modalId) {
         const res = await fetch(`${SB_URL}/rest/v1/finance_tickets?id=eq.${modalId}`, {
           method: 'PATCH',
-          headers: { ...SB_HDR, 'Prefer': 'return=minimal' },
+          headers: SB_HDR,
           body: JSON.stringify({ nome: modalNome })
         });
         if (!res.ok) throw new Error('Falha ao atualizar metadados do ativo.');
@@ -158,14 +172,17 @@ export default function App() {
           headers: SB_HDR,
           body: JSON.stringify({ ticker: upperTicker, nome: modalNome })
         });
-        if (!res.ok) throw new Error('Ticket já cadastrado ou erro na API.');
+        if (!res.ok) throw new Error('Ticket já cadastrado ou erro de segurança (RLS).');
         showToast(`Ticket ${upperTicker} adicionado ao painel.`);
       }
 
       setIsModalOpen(false);
-      await carregarDados();
-      if (!modalId) {
-        setTimeout(() => ejecutarCronVerificacao(), 800);
+      
+      const resRefresh = await fetch(`${SB_URL}/rest/v1/finance_tickets?order=ticker.asc`, { method: 'GET', headers: SB_HDR });
+      if (resRefresh.ok) {
+        const novosTickets = await resRefresh.json();
+        setTickets(novosTickets);
+        setTimeout(() => executarCronVerificacao(), 600);
       }
     } catch (err) {
       showToast(err.message, 'error');
@@ -173,14 +190,14 @@ export default function App() {
   };
 
   const excluirTicket = async (id, ticker) => {
-    if (!confirm(`Tens a certeza que desejas parar de monitorizar o ativo ${ticker}?\nO histórico transacional continuará preservado no banco.`)) return;
+    if (!confirm(`Tens a certeza que desejas parar de monitorizar o ativo ${ticker}?`)) return;
     try {
       const res = await fetch(`${SB_URL}/rest/v1/finance_tickets?id=eq.${id}`, {
         method: 'DELETE',
         headers: SB_HDR
       });
-      if (!res.ok) throw new Error('Não foi possível remover o ticket ativo.');
-      showToast(`Ativo ${ticker} removido do monitoramento.`);
+      if (!res.ok) throw new Error('Não foi possível remover o ativo do Supabase.');
+      showToast(`Ativo ${ticker} removido.`);
       await carregarDados();
     } catch (err) {
       showToast(err.message, 'error');
@@ -249,7 +266,7 @@ export default function App() {
             </h1>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Sincronização ativa a cada 20min • Último check: <span className="text-slate-200 font-mono">{lastCheckTime}</span>
+            Sincronização Ativa • Último check: <span className="text-slate-200 font-mono">{lastCheckTime}</span>
           </p>
         </div>
 
@@ -261,12 +278,12 @@ export default function App() {
             ➕ Adicionar Ticket
           </button>
           <button 
-            onClick={ejecutarCronVerificacao}
+            onClick={executarCronVerificacao}
             disabled={isCronRunning}
             className="flex-1 md:flex-none px-4 py-2.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-xs font-semibold text-slate-300 rounded-xl shadow-lg transition-colors flex items-center justify-center gap-2"
           >
             <span className={`${isCronRunning ? 'animate-spin' : ''}`}>↻</span>
-            {isCronRunning ? 'Atualizando...' : 'Forçar Varredura'}
+            {isCronRunning ? 'Buscando Mercado...' : 'Forçar Varredura'}
           </button>
         </div>
       </header>
@@ -283,7 +300,7 @@ export default function App() {
               {tickets.map(t => {
                 const logsDoAtivo = logsHistoricos.filter(l => l.ticker === t.ticker);
                 const ultimoLog = logsDoAtivo[logsDoAtivo.length - 1];
-                const precoAtual = ultimoLog ? `R$ ${parseFloat(ultimoLog.preco).toFixed(2).replace('.', ',')}` : 'Pendente...';
+                const precoAtual = ultimoLog ? `R$ ${parseFloat(ultimoLog.preco).toFixed(2).replace('.', ',')}` : 'Buscando...';
 
                 const hojeStr = new Date().toISOString().split('T')[0];
                 const logsDeHoje = logsDoAtivo.filter(l => l.registrado_em.startsWith(hojeStr));
@@ -366,7 +383,7 @@ export default function App() {
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
                   {[...logsHistoricos].reverse().slice(0, 50).map(log => {
-                    const statusNoChange = log.status.includes("Sem alterações");
+                    const statusNoChange = log.status.includes("Simulado") || log.status.includes("Sem alterações");
                     return (
                       <tr key={log.id} className="hover:bg-slate-800/30 transition-colors">
                         <td className="p-4 text-slate-400 font-mono">
@@ -395,7 +412,7 @@ export default function App() {
         </section>
       </main>
 
-      {/* MODAL MODERNO (CADASTRO / EDIÇÃO) */}
+      {/* MODAL MODERNO */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl">
@@ -408,7 +425,7 @@ export default function App() {
                 <label className="block text-[11px] font-semibold uppercase text-slate-400 mb-1">Código do Ativo (Ticker)</label>
                 <input 
                   type="text" 
-                  placeholder="Ex: PETR4" 
+                  placeholder="Ex: PETR4 ou AAPL" 
                   disabled={!!modalId}
                   value={modalTicker}
                   onChange={e => setModalTicker(e.target.value)}
