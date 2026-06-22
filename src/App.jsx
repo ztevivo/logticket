@@ -5,11 +5,11 @@ import { Line } from 'react-chartjs-2';
 // Registar componentes do Chart.js para o ecossistema React
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler);
 
-// ── CONFIGURAÇÕES DO BANCO DE DADOS SUPABASE (ATUALIZADO) ────────────────────
+// ── CONFIGURAÇÕES DO BANCO DE DADOS SUPABASE (CORRIGIDO) ────────────────────
 const SB_URL = import.meta.env.VITE_SUPABASE_URL || 'https://gghwqnqxquhrxchimerw.supabase.co';
-const SB_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdnaHdxbnF4cXVocnhjaGltZXJ3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3TabI1MzMxMjgsImV4cCI6MjA5NzcwOTEyOH0.mWAotOVvwVDL9gGnhbjn6asL7lWnrKpwc390nTf6RAc';
+const SB_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdnaHdxbnF4cXVocnhjaGltZXJ3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIxMzMxMjgsImV4cCI6MjA5Yzc3MDkxMjh9.mWAotOVvwVDL9gGnhbjn6asL7lWnrKpwc390nTf6RAc';
 
-// Cabeçalhos corrigidos para destravar a comunicação das requisições (CORS)
+// Cabeçalhos otimizados para evitar travamentos de CORS nas requisições nativas
 const SB_HDR = { 
   'apikey': SB_KEY,
   'Authorization': `Bearer ${SB_KEY}`,
@@ -76,8 +76,8 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // ── BUSCA EM TEMPO REAL (INTEGRAÇÃO YAHOO/GOOGLE FINANCE VIA BRAPI) ───────
-  const ejecutarCronVerificacao = async () => {
+  // ── BUSCA EM TEMPO REAL VIA API FINANCEIRA (BRAPI) ────────────────────────
+  const executarCronVerificacao = async () => {
     if (tickets.length === 0) return;
 
     setIsCronRunning(true);
@@ -100,7 +100,7 @@ export default function App() {
           console.error("Erro na busca de cotações externas:", error);
         }
 
-        // Fallback matemático caso o ativo digitado não seja encontrado na API
+        // Fallback matemático se a API falhar ou o ativo for inválido
         if (!precoAtual || isNaN(precoAtual)) {
           const logsDoAtivo = logsHistoricos.filter(l => l.ticker === t.ticker);
           const ultimoLog = logsDoAtivo[logsDoAtivo.length - 1];
@@ -190,7 +190,7 @@ export default function App() {
   };
 
   const excluirTicket = async (id, ticker) => {
-    if (!confirm(`Tens a certeza que desejas parar de monitorizar o ativo ${ticker}?`)) return;
+    if (!confirm(`Tem certeza que deseja parar de monitorar o ativo ${ticker}?`)) return;
     try {
       const res = await fetch(`${SB_URL}/rest/v1/finance_tickets?id=eq.${id}`, {
         method: 'DELETE',
@@ -290,7 +290,7 @@ export default function App() {
 
       <main className="max-w-7xl mx-auto space-y-6">
         <section>
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-4">Ativos Monitorizados</h2>
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-4">Ativos Monitorados</h2>
           {tickets.length === 0 ? (
             <div className="p-8 text-center border border-dashed border-slate-800 rounded-2xl text-slate-500 text-xs">
               Nenhum ticket ativo na tabela de controle. Adicione o seu primeiro ativo acima.
