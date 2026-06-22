@@ -5,9 +5,10 @@ import { Line } from 'react-chartjs-2';
 // Registar componentes do Chart.js para o ecossistema React
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler);
 
-// ── CONFIGURAÇÕES DO BANCO DE DADOS SUPABASE ────────────────────────────────
-const SB_URL = 'https://arnedjifowldosaiiiud.supabase.co';
-const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFybmVkamlmb3dsZG9zYWlpaXVkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgyMzUwODgsImV4cCI6MjA5MzgxMTA4OH0.ypLgBFu_MPfGYN3t4IYEcOFFbd3MNVFWKNaeqoybuvM';
+// ── CONFIGURAÇÕES DO BANCO DE DADOS SUPABASE (LIDAS DO AMBIENTE VERCEL) ──────
+const SB_URL = import.meta.env.VITE_SUPABASE_URL || 'https://arnedjifowldosaiiiud.supabase.co';
+const SB_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFybmVkamlmb3dsZG9zYWlpaXVkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgyMzUwODgsImV4cCI6MjA5MzgxMTA4OH0.ypLgBFu_MPfGYN3t4IYEcOFFbd3MNVFWKNaeqoybuvM';
+
 const SB_HDR = { 
   'apikey': SB_KEY,
   'Authorization': `Bearer ${SB_KEY}`,
@@ -41,12 +42,10 @@ export default function App() {
   const carregarDados = async () => {
     setLoading(true);
     try {
-      // Buscar Tickets ativos
       const resTickets = await fetch(`${SB_URL}/rest/v1/finance_tickets?order=ticker.asc`, { headers: SB_HDR });
       if (!resTickets.ok) throw new Error('Erro ao carregar os tickets do banco.');
       const dataTickets = await resTickets.json();
       
-      // Buscar Histórico de Preços
       const resLogs = await fetch(`${SB_URL}/rest/v1/finance_price_logs?order=registrado_em.asc`, { headers: SB_HDR });
       if (!resLogs.ok) throw new Error('Erro ao carregar os logs do banco.');
       const dataLogs = await resLogs.json();
@@ -63,17 +62,14 @@ export default function App() {
 
   useEffect(() => {
     carregarDados();
-    
-    // Configurar o intervalo automático de 20 minutos (20 * 60 * 1000 ms)
     const interval = setInterval(() => {
       executarCronVerificacao();
     }, 20 * 60 * 1000);
-
     return () => clearInterval(interval);
   }, []);
 
   // ── ROTINA CRON DE 20 MINUTOS (GOOGLE/YAHOO FINANCE SIMULADO) ─────────────
-  const executarCronVerificacao = async () => {
+  const ejecutarCronVerificacao = async () => {
     if (tickets.length === 0) {
       showToast('Adicione pelo menos um ticket para rodar o monitoramento automático.', 'error');
       return;
@@ -87,11 +83,9 @@ export default function App() {
         const ultimoLog = logsDoAtivo[logsDoAtivo.length - 1];
         const ultimoPreco = ultimoLog ? parseFloat(ultimoLog.preco) : null;
 
-        // Simulação realista das variações do mercado financeiro brasileiro/americano
         const variacao = (Math.random() * 0.4) - 0.2; 
         let precoAtual = ultimoPreco ? (ultimoPreco + variacao) : (Math.random() * 90 + 10);
 
-        // Regra de estabilidade: 35% de chance de o preço não mudar nesta fração de 20min
         if (ultimoPreco && Math.random() < 0.35) {
           precoAtual = ultimoPreco;
         }
@@ -109,7 +103,6 @@ export default function App() {
         });
       }
 
-      // Guardar a nova ronda de logs no Supabase de uma só vez
       const resPost = await fetch(`${SB_URL}/rest/v1/finance_price_logs`, {
         method: 'POST',
         headers: SB_HDR,
@@ -152,7 +145,6 @@ export default function App() {
 
     try {
       if (modalId) {
-        // Modo Edição (Apenas altera o Nome, preservando a chave ticker para não quebrar histórico)
         const res = await fetch(`${SB_URL}/rest/v1/finance_tickets?id=eq.${modalId}`, {
           method: 'PATCH',
           headers: { ...SB_HDR, 'Prefer': 'return=minimal' },
@@ -161,7 +153,6 @@ export default function App() {
         if (!res.ok) throw new Error('Falha ao atualizar metadados do ativo.');
         showToast(`Ticket ${upperTicker} atualizado.`);
       } else {
-        // Modo Inclusão
         const res = await fetch(`${SB_URL}/rest/v1/finance_tickets`, {
           method: 'POST',
           headers: SB_HDR,
@@ -173,10 +164,8 @@ export default function App() {
 
       setIsModalOpen(false);
       await carregarDados();
-      
-      // Se for inclusão nova, já busca a primeira cotação imediatamente
       if (!modalId) {
-        setTimeout(() => executarCronVerificacao(), 800);
+        setTimeout(() => ejecutarCronVerificacao(), 800);
       }
     } catch (err) {
       showToast(err.message, 'error');
@@ -242,8 +231,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 antialiased font-sans p-4 md:p-8">
-      
-      {/* TOAST SYSTEM */}
       {toast.show && (
         <div className={`fixed top-5 right-5 z-50 flex items-center p-4 rounded-xl shadow-2xl border transition-all duration-300 ${
           toast.type === 'error' ? 'bg-red-950/90 border-red-800 text-red-200' : 'bg-slate-900/95 border-emerald-800 text-emerald-200'
@@ -253,7 +240,6 @@ export default function App() {
         </div>
       )}
 
-      {/* HEADER PRINCIPAL */}
       <header className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
         <div>
           <div className="flex items-center gap-3">
@@ -275,7 +261,7 @@ export default function App() {
             ➕ Adicionar Ticket
           </button>
           <button 
-            onClick={executarCronVerificacao}
+            onClick={ejecutarCronVerificacao}
             disabled={isCronRunning}
             className="flex-1 md:flex-none px-4 py-2.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-xs font-semibold text-slate-300 rounded-xl shadow-lg transition-colors flex items-center justify-center gap-2"
           >
@@ -286,8 +272,6 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto space-y-6">
-        
-        {/* CARDS GRID (TICKETS ATIVOS & DIA INÍCIO / FIM) */}
         <section>
           <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-4">Ativos Monitorizados</h2>
           {tickets.length === 0 ? (
@@ -301,7 +285,6 @@ export default function App() {
                 const ultimoLog = logsDoAtivo[logsDoAtivo.length - 1];
                 const precoAtual = ultimoLog ? `R$ ${parseFloat(ultimoLog.preco).toFixed(2).replace('.', ',')}` : 'Pendente...';
 
-                // Cálculo Dinâmico: Dia Início e Fim (Hoje)
                 const hojeStr = new Date().toISOString().split('T')[0];
                 const logsDeHoje = logsDoAtivo.filter(l => l.registrado_em.startsWith(hojeStr));
                 const precoInicio = logsDeHoje.length > 0 ? `R$ ${parseFloat(logsDeHoje[0].preco).toFixed(2).replace('.', ',')}` : '—';
@@ -341,7 +324,6 @@ export default function App() {
           )}
         </section>
 
-        {/* GRÁFICO DE LINHAS INTEGRADO */}
         <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-2xl">
           <h2 className="text-sm font-semibold tracking-wide text-slate-200 mb-4 flex items-center gap-2">
             <span>📈</span> Tendência Temporal das Cotações
@@ -357,7 +339,6 @@ export default function App() {
           </div>
         </section>
 
-        {/* ABA / TABELA DE LOGS DIÁRIOS */}
         <section className="bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden">
           <div className="p-5 border-b border-slate-800 flex justify-between items-center">
             <h2 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
@@ -417,7 +398,7 @@ export default function App() {
       {/* MODAL MODERNO (CADASTRO / EDIÇÃO) */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl animate-in fade-in zoom-in duration-200">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl">
             <h3 className="text-base font-bold text-white mb-4">
               {modalId ? '✏️ Ajustar Configurações do Ticket' : '➕ Configurar Novo Ativo para Monitorização'}
             </h3>
@@ -465,10 +446,6 @@ export default function App() {
           </div>
         </div>
       )}
-
-      <footer className="max-w-7xl mx-auto mt-12 py-4 border-t border-slate-900 text-center text-[10px] text-slate-600">
-        Desenvolvido com React, Vite & Tailwind CSS. Base de dados remota via Supabase REST Client.
-      </footer>
     </div>
   );
 }
