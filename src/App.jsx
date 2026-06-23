@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler, ArcElement } from 'chart.js';
-import { Line as LineChart, Doughnut as DoughnutChart } from 'react-react-chartjs-2';
 import { Line, Doughnut } from 'react-chartjs-2';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler, ArcElement);
@@ -17,55 +16,6 @@ const SB_HDR = {
   'Prefer': 'return=representation' 
 };
 
-// Componente auxiliar para evitar travamento de digitação nos inputs numéricos de Metas
-function InputMetaMecanismo({ nomeSetor, valorInicial, aoSalvar }) {
-  const [valorLocal, setValorLocal] = useState(valorInicial);
-
-  useEffect(() => {
-    setValorLocal(valorInicial);
-  }, [valorInicial]);
-
-  const dispararMudanca = () => {
-    const num = parseFloat(valorLocal) || 0;
-    aoSalvar(nomeSetor, num);
-  };
-
-  return (
-    <input 
-      type="number" 
-      value={valorLocal} 
-      onChange={e => setValorLocal(e.target.value)}
-      onBlur={dispararMudanca}
-      onKeyDown={e => { if(e.key === 'Enter') dispararMudanca(); }}
-      className="w-full px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-xl text-xs font-mono text-slate-200 focus:outline-none focus:border-purple-600 text-center" 
-    />
-  );
-}
-
-function InputPesoAtivoMecanismo({ ticker, setor, valorInicial, aoSalvar }) {
-  const [valorLocal, setValorLocal] = useState(valorInicial);
-
-  useEffect(() => {
-    setValorLocal(valorInicial);
-  }, [valorInicial]);
-
-  const dispararMudanca = () => {
-    const num = parseFloat(valorLocal) || 0;
-    aoSalvar(ticker, setor, num);
-  };
-
-  return (
-    <input 
-      type="number" 
-      value={valorLocal} 
-      onChange={e => setValorLocal(e.target.value)}
-      onBlur={dispararMudanca}
-      onKeyDown={e => { if(e.key === 'Enter') dispararMudanca(); }}
-      className="w-full px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs font-mono text-slate-300 focus:outline-none text-center"
-    />
-  );
-}
-
 export default function App() {
   const [abaAtiva, setAbaAtiva] = useState('home');
 
@@ -74,6 +24,7 @@ export default function App() {
   const [transacoes, setTransacoes] = useState([]); 
   const [loading, setLoading] = useState(false);
   const [isCronRunning, setIsCronRunning] = useState(false);
+  const [lastCheckTime, setLastCheckTime] = useState('Nunca verificado');
   
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalId, setModalId] = useState('');
@@ -89,16 +40,20 @@ export default function App() {
   const [txPreco, setTxPreco] = useState('');
   const [txData, setTxData] = useState(new Date().toISOString().split('T')[0]);
 
-  const [ativosSelecionados, setAtivosSelecionados] = useState([]); 
+  const [sugestoes, setSugestoes] = useState([]);
+  const [loadingSugestoes, setLoadingSugestoes] = useState(false);
+  
   const hojeStr = new Date().toISOString().split('T')[0];
   const [dataInicio, setDataInicio] = useState(hojeStr);
   const [dataFim, setDataFim] = useState(hojeStr);
+  const [ativosSelecionados, setAtivosSelecionados] = useState([]); 
   
   const [toast, setToast] = useState({ show: false, message: '', type: 'info' });
 
   const [setoresMeta, setSetoresMeta] = useState({});
   const [ativosMeta, setAtivosMeta] = useState({});
-  const [alertasSistema, setAlertasSistema] = useState([]);
+  const [novoSetorNome, setNovoSetorNome] = useState('');
+  const [novoSetorMeta, setNovoSetorMeta] = useState('');
 
   const showToast = (message, type = 'info') => {
     setToast({ show: true, message, type });
@@ -155,6 +110,7 @@ export default function App() {
       
       setSetoresMeta(mapeamentoSetores);
       setAtivosMeta(mapeamentoAtivos);
+      setLastCheckTime(new Date().toLocaleTimeString('pt-BR'));
     } catch (err) {
       console.error(err);
       showToast("Erro na sincronização: " + err.message, 'error');
@@ -168,85 +124,48 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const novosAlertas = [];
-    const totalSetores = Object.values(setoresMeta).reduce((acc, curr) => acc + curr, 0);
-    
-    if (totalSetores > 100) {
-      novosAlertas.push(`⚠️ Alocação macro inválida: A soma das categorias é de ${totalSetores.toFixed(1)}%, ultrapassando o limite estrito de 100%.`);
+    if (modalId || !modalTicker.trim() || modalTicker.trim().length < 2) {
+      setSugestoes([]);
+      return;
     }
-
-    Object.entries(setoresMeta).forEach(([nomeSetor, metaLimiteSetor]) => {
-      let somaAtivosDoSetor = 0;
-      Object.entries(ativosMeta).forEach(([ticker, info]) => {
-        if (info.setor === nomeSetor) {
-          somaAtivosDoSetor += info.metaGrupo;
+    const delayDebounceFn = setTimeout(async () => {
+      setLoadingSugestoes(true);
+      try {
+        const query = modalTicker.trim().toUpperCase();
+        const res = await fetch(`https://brapi.dev/api/available?search=${query}&token=${BRAPI_TOKEN}`);
+        if (res.ok) {
+          const dados = await res.json();
+          if (dados && dados.stocks) setSugestoes(dados.stocks.slice(0, 5));
         }
-      });
-
-      if (somaAtivosDoSetor > 100) {
-        novosAlertas.push(`🚨 Categoria Desbalanceada (${nomeSetor}): A soma dos pesos internos dos ativos está dando ${somaAtivosDoSetor}%, ultrapassando 100% internos.`);
-      }
-    });
-
-    setAlertasSistema(novosAlertas);
-  }, [setoresMeta, ativosMeta]);
-
-  const buscarSetorFallbackViaLista = async (tickerLimpo) => {
-    try {
-      const res = await fetch(`https://brapi.dev/api/quote/list?search=${tickerLimpo}&token=${BRAPI_TOKEN}`);
-      if (res.ok) {
-        const dados = await res.json();
-        if (dados && Array.isArray(dados.stocks)) {
-          const match = dados.stocks.find(s => s && s.stock && s.stock.toUpperCase() === tickerLimpo.toUpperCase());
-          if (match && match.sector) return match.sector;
-        }
-      }
-    } catch (e) { console.error(e); }
-    return '';
-  };
-
-  const inferirSetorPorSufixo = (tickerLimpo) => {
-    const t = tickerLimpo.toUpperCase().trim();
-    if (t.endsWith('11')) return 'Fundos Imobiliários';
-    return 'Financeiro e Bancos';
-  };
+      } catch (error) { console.error(error); }
+      finally { setLoadingSugestoes(false); }
+    }, 600);
+    return () => clearTimeout(delayDebounceFn);
+  }, [modalTicker, modalId]);
 
   const selecionarSugestao = async (tickerSelecionado) => {
     let limpo = tickerSelecionado.toUpperCase().trim();
     const tickerComSufixo = limpo.endsWith('.SA') ? limpo : `${limpo}.SA`;
     
     setModalTicker(limpo.replace('.SA', '')); 
+    setSugestoes([]);
+    setLoadingSugestoes(true);
     try {
-      const res = await fetch(`https://brapi.dev/api/quote/${tickerComSufixo}?modules=summaryProfile&token=${BRAPI_TOKEN}`);
-      let nomeCompleto = '';
-      let setorExtraido = '';
-
+      const res = await fetch(`https://brapi.dev/api/quote/${tickerComSufixo}?token=${BRAPI_TOKEN}`);
       if (res.ok) {
         const data = await res.json();
         if (data && data.results && data.results[0]) {
           const ativoObjeto = data.results[0];
-          nomeCompleto = ativoObjeto.longName || ativoObjeto.shortName || 'Empresa Cadastrada';
-          setorExtraido = ativoObjeto.summaryProfile?.sector || ativoObjeto.sector || '';
+          const nomeCompleto = ativoObjeto.longName || ativoObjeto.shortName || 'Empresa Cadastrada';
+          
+          const setorExtraido = ativoObjeto.industry || ativoObjeto.sector || ativoObjeto.segment || 'Outros / Não Classificado';
+          
+          setModalNome(nomeCompleto);
+          setModalSetorAuto(setorExtraido);
         }
       }
-
-      if (!setorExtraido) setorExtraido = await buscarSetorFallbackViaLista(limpo);
-      if (!setorExtraido) setorExtraido = inferirSetorPorSufixo(limpo);
-
-      if (nomeCompleto) setModalNome(nomeCompleto);
-      setModalSetorAuto(setorExtraido);
-    } catch (e) {
-      setModalSetorAuto(inferirSetorPorSufixo(limpo));
-    }
-  };
-
-  const abrirModalEditarTicket = async (id, ticker, nomeAtual) => {
-    setModalId(id);
-    setModalTicker(ticker.toUpperCase());
-    setModalNome(nomeAtual);
-    setModalSetorAuto('');
-    setIsModalOpen(true);
-    await selecionarSugestao(ticker);
+    } catch (e) { console.error(e); }
+    finally { setLoadingSugestoes(false); }
   };
 
   const ejecutarCronVerificacao = async () => {
@@ -372,42 +291,20 @@ export default function App() {
       
       await sincronizarPosicaoAtivo(tkr, novasTx);
       await carregarDados();
-      showToast('Ordem processada com sucesso!', 'success');
+      showToast('Ordem processada!');
     } catch (err) { showToast(err.message, 'error'); }
   };
 
   const excluirTransacao = async (id, ticker) => {
-    if (!confirm('Deseja deletar este lançamento do extrato?')) return;
+    if (!confirm('Deseja deletar este lançamento?')) return;
     try {
       await fetch(`${SB_URL}/rest/v1/finance_transactions?id=eq.${id}`, { method: 'DELETE', headers: SB_HDR });
       const resRefetch = await fetch(`${SB_URL}/rest/v1/finance_transactions?order=registrado_em.desc`, { method: 'GET', headers: SB_HDR });
       const novasTx = await resRefetch.json();
       await sincronizarPosicaoAtivo(ticker, novasTx);
       await carregarDados();
-      showToast('Lançamento removido permanentemente.');
+      showToast('Lançamento removido.');
     } catch (e) { showToast(e.message, 'error'); }
-  };
-
-  const persistirSetorAtivo = async (tkrChave, setorDefinido) => {
-    // Garante que o setor pai exista
-    await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
-      method: 'POST',
-      headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
-      body: JSON.stringify({ nome: setorDefinido, meta_percentual: 0 })
-    });
-
-    // Insere ou atualiza o ativo vinculado a este setor de forma automática
-    await fetch(`${SB_URL}/rest/v1/finance_target_assets`, {
-      method: 'POST',
-      headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
-      body: JSON.stringify({ ticker: tkrChave, setor_nome: setorDefinido, meta_group_percentual: 0 })
-    });
-
-    await fetch(`${SB_URL}/rest/v1/finance_target_assets?ticker=eq.${tkrChave}`, {
-      method: 'PATCH',
-      headers: SB_HDR,
-      body: JSON.stringify({ setor_nome: setorDefinido })
-    });
   };
 
   const salvarTicket = async (e) => {
@@ -425,69 +322,82 @@ export default function App() {
           headers: SB_HDR, 
           body: JSON.stringify({ ticker: tkrChave, nome: modalNome, quantidade: 0, preco_custo: 0 }) 
         });
+
+        await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
+          method: 'POST',
+          headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+          body: JSON.stringify({ nome: setorDefinido, meta_percentual: 0 })
+        });
+
+        await fetch(`${SB_URL}/rest/v1/finance_target_assets`, {
+          method: 'POST',
+          headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+          body: JSON.stringify({ ticker: tkrChave, setor_nome: setorDefinido, meta_group_percentual: 100 })
+        });
       }
-      
-      // PERSISTÊNCIA AUTOMÁTICA EM MAIS DE UMA TABELA (Resolve a sincronização automática no BD)
-      await persistirSetorAtivo(tkrChave, setorDefinido);
       setIsModalOpen(false);
       await carregarDados();
-      showToast(`Ticker ${tkrChave} sincronizado no hub.`, 'success');
+      showToast(`Ticker ${tkrChave} cadastrado.`);
     } catch (err) { showToast(err.message, 'error'); }
   };
 
   const excluirTicket = async (id, ticker) => {
-    const confirmacao = window.confirm(`⚠️ Deseja remover permanentemente o ativo ${ticker.toUpperCase()}?`);
-    if (!confirmacao) return;
-
-    try {
-      await fetch(`${SB_URL}/rest/v1/finance_tickets?id=eq.${id}`, { method: 'DELETE', headers: SB_HDR });
-      await fetch(`${SB_URL}/rest/v1/finance_target_assets?ticker=eq.${ticker.toUpperCase()}`, { method: 'DELETE', headers: SB_HDR });
-      await carregarDados();
-      showToast(`Ativo ${ticker.toUpperCase()} removido com sucesso.`);
-    } catch (err) { showToast(err.message, 'error'); }
+    if (!confirm(`Remover painel de ${ticker}?`)) return;
+    await fetch(`${SB_URL}/rest/v1/finance_tickets?id=eq.${id}`, { method: 'DELETE', headers: SB_HDR });
+    await fetch(`${SB_URL}/rest/v1/finance_target_assets?ticker=eq.${ticker.toUpperCase()}`, { method: 'DELETE', headers: SB_HDR });
+    await carregarDados();
   };
 
-  const atualizarSetorMetaBD = async (setorAlterado, valorNumerico) => {
-    const copiaSetores = { ...setoresMeta, [setorAlterado]: valorNumerico };
-    const somaFutura = Object.values(copiaSetores).reduce((acc, curr) => acc + curr, 0);
-
-    if (somaFutura > 100) {
-      showToast(`Bloqueado: A soma dos setores não pode passar de 100% (Tentativa: ${somaFutura}%).`, 'error');
-      return;
-    }
-
+  const adicionarSetor = async (e) => {
+    e.preventDefault();
+    if (!novoSetorNome.trim() || !novoSetorMeta) return;
     try {
-      await fetch(`${SB_URL}/rest/v1/finance_target_sectors?nome=eq.${setorAlterado}`, {
+      await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
+        method: 'POST',
+        headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+        body: JSON.stringify({ nome: novoSetorNome.trim(), meta_percentual: parseFloat(novoSetorMeta) })
+      });
+      setNovoSetorNome('');
+      setNovoSetorMeta('');
+      await carregarDados();
+      showToast('Setor integrado!');
+    } catch (err) { console.error(err); }
+  };
+
+  const atualizarSetorMetaBD = async (setor, valor) => {
+    try {
+      await fetch(`${SB_URL}/rest/v1/finance_target_sectors?nome=eq.${setor}`, {
         method: 'PATCH',
         headers: SB_HDR,
-        body: JSON.stringify({ meta_percentual: valorNumerico })
+        body: JSON.stringify({ meta_percentual: parseFloat(valor) || 0 })
       });
-      setSetoresMeta(copiaSetores);
-      showToast('Meta do setor salva.', 'success');
+      setSetoresMeta(p => ({ ...p, [setor]: parseFloat(valor) || 0 }));
     } catch (err) { console.error(err); }
+  };
+
+  const removerSetor = async (setor) => {
+    if (!confirm(`Excluir setor "${setor}"?`)) return;
+    try {
+      await fetch(`${SB_URL}/rest/v1/finance_target_sectors?nome=eq.${setor}`, { method: 'DELETE', headers: SB_HDR });
+      await carregarDados();
+    } catch (e) { console.error(e); }
   };
 
   const vincularAtivoAoSetorBD = async (ticker, setor, metaGrupo) => {
     const tkr = ticker.toUpperCase();
     const mGrupo = parseFloat(metaGrupo) || 0;
-    
-    setAtivosMeta(p => ({
-      ...p,
-      [tkr]: { setor: setor || 'Sem Setor', metaGrupo: mGrupo }
-    }));
-
     try {
       await fetch(`${SB_URL}/rest/v1/finance_target_assets`, {
         method: 'POST',
         headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
         body: JSON.stringify({ ticker: tkr, setor_nome: setor || null, meta_group_percentual: mGrupo })
       });
-      
       await fetch(`${SB_URL}/rest/v1/finance_target_assets?ticker=eq.${tkr}`, {
         method: 'PATCH',
         headers: SB_HDR,
         body: JSON.stringify({ setor_nome: setor || null, meta_group_percentual: mGrupo })
       });
+      setAtivosMeta(p => ({ ...p, [tkr]: { setor, metaGrupo: mGrupo } }));
     } catch (e) { console.error(e); }
   };
 
@@ -516,8 +426,8 @@ export default function App() {
           const logs = Array.isArray(logsHistoricos) ? logsHistoricos.filter(l => l && l.ticker && l.ticker.toUpperCase() === t.ticker.toUpperCase()) : [];
           return parseInt(t.quantidade) * (logs[logs.length - 1] ? parseFloat(logs[logs.length - 1].preco) : parseFloat(t.preco_custo || 0));
         }),
-        backgroundColor: ['#3b82f6', '#10b981', '#f43f5e', '#eab308', '#8b5cf6', '#ec4899', '#14b8a6'],
-        borderWidth: 0
+        backgroundColor: ['#3b82f6', '#10b981', '#ef4444', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6'],
+        borderWidth: 1, borderColor: '#1e293b'
       }]
     };
   };
@@ -528,7 +438,7 @@ export default function App() {
       datasets: [{
         data: Object.values(setoresMeta),
         backgroundColor: ['#6366f1', '#14b8a6', '#f43f5e', '#eab308', '#a855f7', '#06b6d4'],
-        borderWidth: 0
+        borderWidth: 1, borderColor: '#1e293b'
       }]
     };
   };
@@ -537,11 +447,8 @@ export default function App() {
     responsive: true,
     maintainAspectRatio: false,
     plugins: {
-      legend: { 
-        position: 'bottom', 
-        labels: { color: '#94a3b8', font: { size: 11, family: 'Plus Jakarta Sans', weight: '500' }, boxWidth: 12, padding: 15 } 
-      },
-      title: { display: true, text: titulo, color: '#f8fafc', font: { size: 14, family: 'Plus Jakarta Sans', weight: '700' }, padding: { bottom: 10 } },
+      legend: { position: 'bottom', labels: { color: '#9ca3af', font: { size: 10 } } },
+      title: { display: true, text: titulo, color: '#f8fafc', font: { size: 12, weight: 'bold' } },
     }
   });
 
@@ -566,115 +473,55 @@ export default function App() {
         return {
           label: ticker,
           data: logsDoAtivo.map(l => parseFloat(l.preco || 0)),
-          borderColor: ['#3b82f6', '#10b981', '#f43f5e', '#eab308', '#8b5cf6', '#ec4899', '#14b8a6'][idx % 7],
-          borderWidth: 2, fill: false, tension: 0.2, pointRadius: 2
+          borderColor: ['#3b82f6', '#10b981', '#ef4444', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6'][idx % 7],
+          borderWidth: 2, fill: false, tension: 0.1
         };
       }).filter(dataset => dataset.data.length > 0)
     };
   };
 
   return (
-    <div className="min-h-screen p-4 md:p-8 text-slate-200">
-      
-      {/* Toast Notifier */}
+    <div className="min-h-screen bg-slate-950 text-slate-100 p-4 md:p-8 font-sans antialiased">
       {toast.show && (
-        <div className="fixed top-6 right-6 z-50 flex items-center gap-3 px-4 py-3.5 rounded-xl bg-slate-900/90 backdrop-blur-md border border-slate-800 text-slate-200 text-xs shadow-2xl shadow-black/50 animate-slide-up">
-          <div className={`w-2 h-2 rounded-full ${toast.type === 'error' ? 'bg-rose-500' : 'bg-emerald-500'}`} />
-          <span className="font-medium">{toast.message}</span>
+        <div className="fixed top-5 right-5 z-50 flex items-center p-4 rounded-xl bg-slate-900 border border-emerald-800 text-emerald-200 text-xs shadow-2xl">
+          <span>✨</span> <span className="ml-2">{toast.message}</span>
         </div>
       )}
 
-      {/* Header Glassmorphism */}
-      <header className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10 bg-slate-900/40 backdrop-blur-md border border-slate-900 p-6 rounded-2xl shadow-xl shadow-black/20">
-        <div className="flex items-center gap-4">
-          <div className="p-2.5 bg-blue-600/10 border border-blue-500/20 rounded-xl text-blue-400">
-            <svg className="w-8 h-8" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M4 8H20M4 16H20M8 4V20M16 4V20" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-              <path d="M6 12H18M12 6V18" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" strokeDasharray="2 2"/>
-            </svg>
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-2xl font-extrabold bg-gradient-to-r from-blue-400 via-indigo-400 to-purple-400 bg-clip-text text-transparent tracking-tight">
-                LogTicket
-              </h1>
-              <span className="text-[10px] bg-blue-500/10 border border-blue-500/20 text-blue-400 font-mono px-1.5 py-0.5 rounded">v2.5</span>
-            </div>
-            <p className="text-xs text-slate-400 mt-1 font-medium">Gestão Automatizada de Portfólio Auditável</p>
-            
-            <div className="flex gap-1 mt-4 bg-slate-950 p-1 rounded-xl border border-slate-800/80 w-fit">
-              <button 
-                onClick={() => setAbaAtiva('home')} 
-                className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all ${abaAtiva === 'home' ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-900/20' : 'text-slate-400 hover:text-slate-200'}`}
-              >
-                📊 Painel Geral
-              </button>
-              <button 
-                onClick={() => setAbaAtiva('metas')} 
-                className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all ${abaAtiva === 'metas' ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-md shadow-purple-900/20' : 'text-slate-400 hover:text-slate-200'}`}
-              >
-                ⚙️ Metas & Setores
-              </button>
-            </div>
+      <header className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8 border-b border-slate-900 pb-5">
+        <div>
+          <h1 className="text-2xl font-black bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">QuantumFinance Hub</h1>
+          <p className="text-xs text-slate-400 mt-0.5">Gestão Automatizada de Portfólio Auditável</p>
+          
+          <div className="flex gap-2 mt-4 bg-slate-900/60 p-1 rounded-xl border border-slate-800 w-fit">
+            <button onClick={() => setAbaAtiva('home')} className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${abaAtiva === 'home' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}>📊 Painel Geral</button>
+            <button onClick={() => setAbaAtiva('metas')} className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${abaAtiva === 'metas' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}>⚙️ Configurar Metas & Setores</button>
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-2.5 w-full md:w-auto">
-          <button onClick={() => abrirModalTransacao()} className="flex-1 md:flex-none px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold text-xs rounded-xl transition-all shadow-lg shadow-emerald-950/20 active:scale-[0.98]">
-            💸 Registrar Ordem
-          </button>
-          <button onClick={() => { setModalId(''); setModalTicker(''); setModalNome(''); setModalSetorAuto(''); setIsModalOpen(true); }} className="flex-1 md:flex-none px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-slate-100 font-bold text-xs rounded-xl transition-all shadow-lg active:scale-[0.98]">
-            ➕ Novo Ticker
-          </button>
-          <button 
-            onClick={ejecutarCronVerificacao} 
-            disabled={isCronRunning} 
-            className={`px-4 py-2.5 bg-slate-950 hover:bg-slate-900 border border-slate-800 text-xs font-bold font-mono text-slate-400 rounded-xl transition-all flex items-center gap-2 ${isCronRunning ? 'opacity-50 cursor-not-allowed' : ''}`}
-          >
-            <span className={`w-1.5 h-1.5 rounded-full bg-blue-400 ${isCronRunning ? 'animate-ping' : ''}`} />
-            {isCronRunning ? 'Atualizando...' : '↻ Preços'}
-          </button>
+        <div className="flex gap-3 w-full md:w-auto self-end md:self-auto">
+          <button onClick={() => abrirModalTransacao()} className="flex-1 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-xs font-bold rounded-xl shadow-lg">💸 Registrar Ordem</button>
+          <button onClick={() => { setModalId(''); setModalTicker(''); setModalNome(''); setModalSetorAuto(''); setIsModalOpen(true); }} className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-xs font-bold rounded-xl shadow-lg">➕ Novo Ticker</button>
+          <button onClick={ejecutarCronVerificacao} disabled={isCronRunning} className="px-4 py-2 bg-slate-900 border border-slate-800 text-xs font-bold text-slate-300 rounded-xl">↻ Preços</button>
         </div>
       </header>
 
-      {/* Main Content Arena */}
-      <main className="max-w-7xl mx-auto space-y-8">
-        {loading && (
-          <div className="flex items-center gap-3 px-4 py-3 bg-blue-500/5 border border-blue-500/10 rounded-xl text-xs font-mono text-blue-400 animate-pulse">
-            <div className="w-2 h-2 bg-blue-500 rounded-full animate-ping" />
-            Sincronizando base de dados em nuvem em tempo real...
-          </div>
-        )}
+      <main className="max-w-7xl mx-auto space-y-6">
+        {loading && <div className="text-xs text-blue-400 font-mono animate-pulse">Sincronizando base de dados em tempo real...</div>}
         
         {abaAtiva === 'home' && (
           <>
-            {/* Charts Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-900/20 p-2 rounded-2xl border border-slate-900/60">
-              <div className="bg-slate-900/60 border border-slate-900/80 backdrop-blur-sm rounded-2xl p-6 h-72 shadow-lg">
-                {Object.keys(setoresMeta).length > 0 ? (
-                  <DoughnutChart data={prepararPizzaMeta()} options={opcoesPizzaPercentual('Alocação por Categoria / Setores (%)')} />
-                ) : (
-                  <div className="text-xs text-slate-500 font-medium text-center pt-28">Configure as metas de categoria na aba superior.</div>
-                )}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-900/40 p-5 rounded-2xl border border-slate-800/60">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 h-60">
+                {Object.keys(setoresMeta).length > 0 ? <Doughnut data={prepararPizzaMeta()} options={opcoesPizzaPercentual('Alocação Objetiva / Meta (%)')} /> : <div className="text-xs text-slate-600 text-center pt-24">Configure as metas na aba superior.</div>}
               </div>
-              <div className="bg-slate-900/60 border border-slate-900/80 backdrop-blur-sm rounded-2xl p-6 h-72 shadow-lg">
-                {tickets && tickets.some(t => t && parseInt(t.quantidade || 0) > 0) ? (
-                  <DoughnutChart data={prepararPizzaReal()} options={opcoesPizzaPercentual('Alocação Líquida Real (%)')} />
-                ) : (
-                  <div className="text-xs text-slate-500 font-medium text-center pt-28">Lance compras no extrato para computar a distribuição real.</div>
-                )}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 h-60">
+                {tickets && tickets.some(t => t && parseInt(t.quantidade || 0) > 0) ? <Doughnut data={prepararPizzaReal()} options={opcoesPizzaPercentual('Alocação Líquida Real (%)')} /> : <div className="text-xs text-slate-600 text-center pt-24">Lance compras no extrato para computar o real.</div>}
               </div>
             </div>
 
-            {/* Assets Grid */}
             <div className="space-y-4">
-              <div className="flex justify-between items-center px-1">
-                <h2 className="text-xs font-bold uppercase tracking-widest text-slate-400">Ativos & Desempenho Operacional</h2>
-                <span className="text-xs text-slate-400 font-medium bg-slate-900/60 border border-slate-900 px-2.5 py-1 rounded-lg">
-                  Patrimônio Combinado: <strong className="font-mono text-white ml-1">R$ {totalPatrimonioReal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
-                </span>
-              </div>
-
+              <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">Ativos & Desempenho Operacional</h2>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {tickets.map(t => {
                   if (!t) return null;
@@ -690,52 +537,36 @@ export default function App() {
                   const pctAlvoGlobal = (pctSetorAlvo * (mAtivo?.metaGrupo || 0)) / 100;
 
                   return (
-                    <div key={t.id} className="bg-slate-900/40 backdrop-blur-sm border border-slate-900 rounded-2xl p-5 flex flex-col justify-between shadow-md hover:border-slate-800 transition-all hover:translate-y-[-1px]">
+                    <div key={t.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col justify-between">
                       <div>
                         <div className="flex justify-between items-start">
                           <div>
-                            <span className="text-lg font-black text-blue-400 tracking-wide font-mono">{t.ticker.toUpperCase()}</span>
-                            <p className="text-xs text-slate-400 font-medium line-clamp-1 mt-0.5">{t.nome}</p>
-                            <span className="text-[10px] font-mono px-2 py-0.5 bg-slate-950 text-slate-400 border border-slate-800 rounded-md mt-2 inline-block font-medium">
-                              📁 {setorPai}
-                            </span>
+                            <span className="text-lg font-black text-blue-400 tracking-wider">{t.ticker.toUpperCase()}</span>
+                            <p className="text-[11px] text-slate-400 line-clamp-1">{t.nome}</p>
+                            <span className="text-[10px] px-2 py-0.5 bg-slate-950 text-slate-400 border border-slate-800 rounded-md mt-1 inline-block font-medium">📁 {setorPai}</span>
                           </div>
-                          
-                          <div className="flex items-center gap-1.5">
-                            <button 
-                              onClick={() => abrirModalEditarTicket(t.id, t.ticker, t.nome)} 
-                              className="p-1.5 text-slate-500 hover:text-blue-400 text-xs transition-colors rounded-lg hover:bg-blue-500/10"
-                            >
-                              ⚙️
-                            </button>
-                            <button 
-                              onClick={() => excluirTicket(t.id, t.ticker)} 
-                              className="p-1.5 text-slate-600 hover:text-rose-400 text-sm transition-colors rounded-lg hover:bg-rose-500/5"
-                            >
-                              ✕
-                            </button>
-                          </div>
+                          <button onClick={() => excluirTicket(t.id, t.ticker)} className="text-slate-500 hover:text-red-400 text-xs">✕</button>
                         </div>
 
-                        <div className="mt-5 bg-slate-950 p-2.5 rounded-xl border border-slate-900">
-                          <div className="flex justify-between text-[11px] mb-1.5 font-medium">
-                            <span className="text-slate-400">Atual: <strong className="font-mono text-blue-400">{pctReal.toFixed(1)}%</strong></span>
-                            <span className="text-slate-400">Meta Global: <strong className="font-mono text-purple-400">{pctAlvoGlobal.toFixed(1)}%</strong></span>
+                        <div className="mt-4">
+                          <div className="flex justify-between text-[10px] mb-1">
+                            <span className="text-slate-400">Real: <strong>{pctReal.toFixed(1)}%</strong></span>
+                            <span className="text-purple-400">Meta: <strong>{pctAlvoGlobal.toFixed(1)}%</strong></span>
                           </div>
-                          <div className="w-full h-1.5 bg-slate-900 rounded-full overflow-hidden">
-                            <div className="bg-gradient-to-r from-blue-500 to-indigo-500 h-full transition-all" style={{ width: `${Math.min(pctReal, 100)}%` }} />
+                          <div className="w-full h-1.5 bg-slate-950 rounded-full overflow-hidden">
+                            <div className="bg-blue-500 h-full transition-all" style={{ width: `${Math.min(pctReal, 100)}%` }} />
                           </div>
                         </div>
                       </div>
 
-                      <div className="mt-5 pt-4 border-t border-slate-900/80 flex justify-between items-end text-xs">
+                      <div className="mt-4 pt-3 border-t border-slate-800/60 flex justify-between items-baseline text-xs">
                         <div>
-                          <span className="text-[10px] text-slate-500 font-semibold block uppercase tracking-wider">Custódia</span>
-                          <span className="font-mono font-medium text-slate-300 mt-0.5 block">{qtdVal} un • R$ {parseFloat(t.preco_custo || 0).toFixed(2)}</span>
+                          <span className="text-[10px] text-slate-500 block">Posição</span>
+                          <span className="font-mono text-slate-200">{qtdVal} un • R$ {parseFloat(t.preco_custo || 0).toFixed(2)}</span>
                         </div>
                         <div className="text-right">
-                          <span className="text-[10px] text-slate-500 font-semibold block uppercase tracking-wider">Valorização</span>
-                          <span className="font-bold font-mono text-white text-sm mt-0.5 block">R$ {patrReal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                          <span className="text-[10px] text-slate-500 block">Total</span>
+                          <span className="font-black font-mono text-white">R$ {patrReal.toFixed(2)}</span>
                         </div>
                       </div>
                     </div>
@@ -744,24 +575,20 @@ export default function App() {
               </div>
             </div>
 
-            {/* Historical Analytics */}
-            <section className="bg-slate-900/40 border border-slate-900 rounded-2xl p-6 space-y-6 shadow-xl">
-              <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 border-b border-slate-900 pb-4">
+            <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+              <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4">
                 <div>
-                  <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2">
-                    <span className="w-1.5 h-3 bg-blue-500 rounded-full" />
-                    🎛️ Flutuação e Evolução Histórica
-                  </h3>
-                  <p className="text-xs text-slate-400 mt-0.5">Selecione e compare os ativos monitorados dinamicamente.</p>
+                  <h3 className="text-sm font-bold text-slate-200">🎛️ Flutuação e Evolução Histórica</h3>
+                  <p className="text-xs text-slate-500 mt-0.5">Clique nos múltiplos ativos abaixo para comparar imediatamente seus desempenhos.</p>
                 </div>
-                <div className="flex gap-2 self-end sm:self-auto bg-slate-950 p-1.5 rounded-xl border border-slate-800">
-                  <input type="date" value={dataInicio} onChange={e => setDataInicio(e.target.value)} className="px-2 py-1 bg-slate-900 border border-slate-800 rounded-lg text-xs font-mono text-slate-300 focus:outline-none" />
-                  <span className="text-slate-600 self-center text-xs px-0.5">a</span>
-                  <input type="date" value={dataFim} onChange={e => setDataFim(e.target.value)} className="px-2 py-1 bg-slate-900 border border-slate-800 rounded-lg text-xs font-mono text-slate-300 focus:outline-none" />
+                <div className="flex gap-2 self-end sm:self-auto">
+                  <input type="date" value={dataInicio} onChange={e => setDataInicio(e.target.value)} className="px-2 py-1 bg-slate-950 border border-slate-800 rounded-lg text-xs font-mono text-slate-300" />
+                  <input type="date" value={dataFim} onChange={e => setDataFim(e.target.value)} className="px-2 py-1 bg-slate-950 border border-slate-800 rounded-lg text-xs font-mono text-slate-300" />
                 </div>
               </div>
 
-              <div className="flex flex-wrap gap-1.5 p-3 bg-slate-950 rounded-xl border border-slate-900">
+              <div className="flex flex-wrap gap-2 p-3 bg-slate-950 rounded-xl border border-slate-800/60">
+                <span className="text-[11px] font-bold text-slate-400 uppercase flex items-center mr-2">Comparar ativos:</span>
                 {tickets.map(t => {
                   if (!t) return null;
                   const ativoChave = t.ticker.toUpperCase();
@@ -771,87 +598,64 @@ export default function App() {
                       key={t.id}
                       type="button"
                       onClick={() => alternarSelecaoAtivo(ativoChave)}
-                      className={`px-3 py-1 text-xs font-mono font-bold rounded-lg border transition-all ${
+                      className={`px-2.5 py-1 text-xs font-mono font-bold rounded-lg border transition-all flex items-center gap-1.5 ${
                         estaSelecionado 
-                          ? 'bg-blue-500/10 border-blue-500/40 text-blue-400 shadow-inner' 
-                          : 'bg-slate-900 border-slate-800/80 text-slate-400 hover:text-slate-200'
+                          ? 'bg-blue-600/20 border-blue-500 text-blue-400 shadow-sm shadow-blue-500/10' 
+                          : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-300 hover:border-slate-700'
                       }`}
                     >
+                      <span className={`w-1.5 h-1.5 rounded-full ${estaSelecionado ? 'bg-blue-400' : 'bg-slate-600'}`}></span>
                       {ativoChave}
                     </button>
                   );
                 })}
+                {ativosSelecionados.length > 0 && (
+                  <button onClick={() => setAtivosSelecionados([])} className="text-[11px] text-slate-500 hover:text-red-400 ml-auto font-medium transition-colors">Limpar Filtros ✕</button>
+                )}
               </div>
 
-              <div className="h-72 w-full pt-2">
-                {logsFinaisExibição.length > 0 ? (
-                  <LineChart 
-                    data={prepararDadosGraficoLinha()} 
-                    options={{
-                      responsive: true,
-                      maintainAspectRatio: false,
-                      scales: {
-                        y: { grid: { color: 'rgba(30, 41, 59, 0.3)' }, ticks: { color: '#64748b', font: { size: 10, family: 'JetBrains Mono' } } },
-                        x: { grid: { display: false }, ticks: { color: '#64748b', font: { size: 9, family: 'JetBrains Mono' } } }
-                      },
-                      plugins: {
-                        legend: { position: 'top', labels: { color: '#94a3b8', font: { size: 11, family: 'Plus Jakarta Sans' } } }
-                      }
-                    }} 
-                  />
-                ) : (
-                  <div className="text-xs text-slate-500 font-medium text-center pt-28">Nenhum log histórico encontrado para os parâmetros selecionados.</div>
-                )}
+              <div className="h-60 w-full">
+                {logsFinaisExibição.length > 0 ? <Line data={prepararDadosGraficoLinha()} options={{ responsive: true, maintainAspectRatio: false }} /> : <div className="text-xs text-slate-600 text-center pt-24">Sem cotações registradas no período ou ativos selecionados.</div>}
               </div>
             </section>
 
-            {/* Livro de Ordens */}
-            <section className="bg-slate-900/40 border border-slate-900 rounded-2xl overflow-hidden shadow-2xl">
-              <div className="p-4 bg-slate-900/50 border-b border-slate-900">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">📋 Livro de Ordens e Movimentações Financeiras</h3>
+            <section className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
+              <div className="p-4 bg-slate-900/50 border-b border-slate-800">
+                <h3 className="text-sm font-bold text-slate-200">📋 Livro de Ordens e Movimentações Financeiras</h3>
               </div>
-              <div className="overflow-x-auto max-h-72">
+              <div className="overflow-x-auto max-h-64">
                 <table className="w-full text-left text-xs">
                   <thead>
-                    <tr className="bg-slate-950 text-slate-400 border-b border-slate-900 font-mono text-[11px]">
-                      <th className="p-4">Data</th>
-                      <th className="p-4">Ativo</th>
-                      <th className="p-4">Ação</th>
-                      <th className="p-4">Volume</th>
-                      <th className="p-4">Custo Unitário</th>
-                      <th className="p-4 text-center">Ações</th>
+                    <tr className="bg-slate-950 text-slate-400 border-b border-slate-800 font-mono">
+                      <th className="p-3">Data</th>
+                      <th className="p-3">Ativo</th>
+                      <th className="p-3">Ação</th>
+                      <th className="p-3">Volume</th>
+                      <th className="p-3">Custo Unitário</th>
+                      <th className="p-3 text-center">Ações</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-900/60 font-medium">
+                  <tbody className="divide-y divide-slate-800/40">
                     {transacoes.map(tx => {
                       if (!tx) return null;
                       return (
-                        <tr key={tx.id} className="hover:bg-slate-900/30 transition-colors">
-                          <td className="p-4 font-mono text-slate-400">{tx.registrado_em ? new Date(tx.registrado_em).toLocaleDateString('pt-BR') : '---'}</td>
-                          <td className="p-4 font-bold text-blue-400 font-mono tracking-wider">{tx.ticker?.toUpperCase()}</td>
-                          <td className="p-4">
-                            <span className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold font-mono tracking-wide ${tx.tipo === 'COMPRA' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}`}>
+                        <tr key={tx.id} className="hover:bg-slate-800/10">
+                          <td className="p-3 font-mono text-slate-400">{tx.registrado_em ? new Date(tx.registrado_em).toLocaleDateString('pt-BR') : '---'}</td>
+                          <td className="p-3 font-bold text-blue-400">{tx.ticker?.toUpperCase()}</td>
+                          <td className="p-3">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${tx.tipo === 'COMPRA' ? 'bg-emerald-950 text-emerald-400' : 'bg-red-950 text-red-400'}`}>
                               {tx.tipo}
                             </span>
                           </td>
-                          <td className="p-4 font-mono text-slate-300">{tx.quantidade} un</td>
-                          <td className="p-4 font-mono text-slate-300">R$ {parseFloat(tx.preco || 0).toFixed(2)}</td>
-                          <td className="p-4 text-center flex items-center justify-center gap-4">
-                            <button onClick={() => abrirModalTransacao(tx.id)} className="text-blue-400 hover:text-blue-300 text-xs flex items-center gap-1 font-semibold transition-colors">
-                              ✏️ Ajustar
-                            </button>
-                            <button onClick={() => excluirTransacao(tx.id, tx.ticker)} className="text-slate-600 hover:text-rose-400 text-xs transition-colors">
-                              ✕ Deletar
-                            </button>
+                          <td className="p-3 font-mono">{tx.quantidade} un</td>
+                          <td className="p-3 font-mono">R$ {parseFloat(tx.preco || 0).toFixed(2)}</td>
+                          <td className="p-3 text-center flex items-center justify-center gap-4">
+                            <button onClick={() => abrirModalTransacao(tx.id)} className="text-slate-400 hover:text-blue-400 font-medium transition-colors">✏️ Ajustar</button>
+                            <button onClick={() => excluirTransacao(tx.id, tx.ticker)} className="text-slate-500 hover:text-red-400 transition-colors">✕ Deletar</button>
                           </td>
                         </tr>
                       );
                     })}
-                    {transacoes.length === 0 && (
-                      <tr>
-                        <td colSpan="6" className="p-8 text-center text-xs text-slate-500 font-medium">Nenhum lançamento contábil registrado no histórico do sistema.</td>
-                      </tr>
-                    )}
                   </tbody>
                 </table>
               </div>
@@ -860,91 +664,56 @@ export default function App() {
         )}
 
         {abaAtiva === 'metas' && (
-          <div className="space-y-6">
-            
-            {/* CENTRAL DE ALERTAS DINÂMICOS DO SISTEMA */}
-            {alertasSistema.length > 0 && (
-              <div className="bg-rose-950/40 border border-rose-900/60 rounded-2xl p-5 space-y-2.5 shadow-md">
-                <h4 className="text-xs font-bold text-rose-400 uppercase tracking-wider flex items-center gap-2">
-                  <span>📢</span> Alertas de Alocação e Rebalanceamento
-                </h4>
-                <div className="space-y-1.5">
-                  {alertasSistema.map((alerta, idx) => (
-                    <p key={idx} className="text-xs text-rose-300 font-medium leading-relaxed font-mono">
-                      {alerta}
-                    </p>
-                  ))}
-                </div>
-              </div>
-            )}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6">
+            <div>
+              <h2 className="text-base font-black text-white">⚙️ Painel de Metas & Peso da Carteira</h2>
+              <p className="text-xs text-slate-400 mt-1">Defina a distribuição e o peso ideal de cada setor/ativo.</p>
+            </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-              
-              {/* DEFINIÇÃO DE PERCENTUAL POR CATEGORIA (MÁXIMO 100%) - CORRIGIDO SEM TRAVAMENTO */}
-              <div className="bg-slate-900/40 border border-slate-900 p-6 rounded-2xl space-y-6 shadow-md">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+              <div className="space-y-4 bg-slate-950 p-4 rounded-xl border border-slate-800/80">
                 <div>
-                  <h3 className="text-sm font-bold text-slate-200">📊 1. Percentual por Categoria (Max 100%)</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">Estipule o teto macro. Salva ao sair do campo ou apertar Enter.</p>
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-purple-400">1. Alocação por Setor</h3>
+                  <p className="text-[11px] text-slate-500">Defina a porcentagem macro desejada por indústria.</p>
                 </div>
-
-                <div className="space-y-3 max-h-[400px] overflow-y-auto pr-1">
-                  {Object.entries(setoresMeta).map(([nome, meta]) => (
-                    <div key={nome} className="bg-slate-950 p-3.5 rounded-xl border border-slate-900">
-                      <span className="text-xs font-bold text-slate-300 block mb-2">{nome}</span>
+                
+                <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                  {Object.entries(setoresMeta).map(([setor, pct]) => (
+                    <div key={setor} className="flex items-center justify-between bg-slate-900 p-2 rounded-xl border border-slate-800">
+                      <span className="text-xs font-bold text-slate-300">{setor}</span>
                       <div className="flex items-center gap-2">
-                        <InputMetaMecanismo 
-                          nomeSetor={nome} 
-                          valorInicial={meta} 
-                          aoSalvar={atualizarSetorMetaBD} 
-                        />
-                        <span className="text-xs text-slate-500 font-bold">% meta</span>
+                        <input type="number" value={pct} onChange={e => atualizarSetorMetaBD(setor, e.target.value)} className="w-16 px-2 py-1 bg-slate-950 text-xs font-mono rounded text-center border border-slate-800 text-purple-400 font-bold" />
+                        <button onClick={() => removerSetor(setor)} className="text-slate-500 hover:text-red-400 text-xs">✕</button>
                       </div>
                     </div>
                   ))}
-                  {Object.keys(setoresMeta).length === 0 && (
-                    <p className="text-xs text-slate-500 font-medium text-center">Cadastre um ticker na home para habilitar as categorias automaticamente.</p>
-                  )}
                 </div>
+
+                <form onSubmit={adicionarSetor} className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-800">
+                  <input type="text" placeholder="Setor..." value={novoSetorNome} onChange={e => setNovoSetorNome(e.target.value)} className="col-span-2 px-2 py-1 bg-slate-900 border border-slate-800 rounded-lg text-xs text-white" />
+                  <input type="number" placeholder="%" value={novoSetorMeta} onChange={e => setNovoSetorMeta(e.target.value)} className="px-2 py-1 bg-slate-900 border border-slate-800 rounded-lg text-xs font-mono text-white" />
+                  <button type="submit" className="col-span-3 py-1.5 bg-purple-900/40 hover:bg-purple-800 border border-purple-700/50 text-[11px] font-bold rounded-lg text-purple-200">➕ Inserir Novo Setor</button>
+                </form>
               </div>
 
-              {/* DISTRIBUIÇÃO INTERNA DOS ATIVOS DENTRO DA CATEGORIA */}
-              <div className="lg:col-span-2 bg-slate-900/40 border border-slate-900 p-6 rounded-2xl space-y-6 shadow-md">
+              <div className="space-y-4 bg-slate-950 p-4 rounded-xl border border-slate-800/80">
                 <div>
-                  <h3 className="text-sm font-bold text-slate-200">🔗 2. Distribuição e Pesos por Ativo</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">Defina o peso relativo (0% a 100%) que este ativo representa exclusivamente dentro de sua categoria pai.</p>
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-blue-400">2. Peso de Ativos no Grupo</h3>
+                  <p className="text-[11px] text-slate-500">Mude a categoria ou o peso de dispersão interna do ativo.</p>
                 </div>
-                <div className="space-y-2.5 max-h-[460px] overflow-y-auto pr-2">
+
+                <div className="max-h-80 overflow-y-auto space-y-2 pr-1">
                   {tickets.map(t => {
-                    const metaInfo = ativosMeta[t.ticker.toUpperCase()] || { setor: 'Sem Setor', metaGrupo: 0 };
+                    if (!t) return null;
+                    const mAtivo = ativosMeta[t.ticker.toUpperCase()] || { setor: '', metaGrupo: 100 };
                     return (
-                      <div key={t.id} className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center bg-slate-950 p-3.5 rounded-xl border border-slate-900">
-                        <div>
-                          <span className="text-xs font-bold text-blue-400 tracking-wider font-mono">{t.ticker.toUpperCase()}</span>
-                          <p className="text-[11px] text-slate-400 font-medium line-clamp-1 mt-0.5">{t.nome}</p>
-                        </div>
-                        <div>
-                          <select 
-                            value={metaInfo.setor} 
-                            onChange={e => vincularAtivoAoSetorBD(t.ticker, e.target.value, metaInfo.metaGrupo)}
-                            className="w-full px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-300 font-medium focus:outline-none"
-                          >
-                            <option value="Sem Setor">Sem Setor</option>
-                            {Object.keys(setoresMeta).map(sNome => (
-                              <option key={sNome} value={sNome}>{sNome}</option>
-                            ))}
-                          </select>
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <InputPesoAtivoMecanismo 
-                              ticker={t.ticker}
-                              setor={metaInfo.setor}
-                              valorInicial={metaInfo.metaGrupo}
-                              aoSalvar={vincularAtivoAoSetorBD}
-                            />
-                            <span className="text-[11px] text-slate-500 font-medium">% no setor</span>
-                          </div>
-                        </div>
+                      <div key={t.id} className="grid grid-cols-3 gap-2 bg-slate-900 p-2 rounded-lg border border-slate-800 items-center text-xs">
+                        <span className="font-mono font-bold text-blue-400">{t.ticker.toUpperCase()}</span>
+                        <select value={mAtivo.setor || ''} onChange={e => vincularAtivoAoSetorBD(t.ticker, e.target.value, mAtivo.metaGrupo)} className="bg-slate-950 text-[11px] text-slate-300 border border-slate-800 rounded p-1">
+                          <option value="">Sem Grupo</option>
+                          {Object.keys(setoresMeta).map(s => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                        <input type="number" placeholder="Peso %" value={mAtivo.metaGrupo} onChange={e => vincularAtivoAoSetorBD(t.ticker, mAtivo.setor, e.target.value)} className="bg-slate-950 text-center font-mono text-[11px] border border-slate-800 rounded p-1 text-emerald-400 font-bold" />
                       </div>
                     );
                   })}
@@ -955,103 +724,89 @@ export default function App() {
         )}
       </main>
 
-      {/* MODAL: Criar/Editar Ticker */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
-          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl shadow-black animate-slide-up space-y-4">
-            <div className="flex justify-between items-start">
-              <div>
-                <h3 className="text-sm font-bold text-white">{modalId ? 'Atualizar Identificação' : 'Acoplar Novo Ativo'}</h3>
-                <p className="text-xs text-slate-400 mt-0.5">Os metadados corporativos serão recuperados via Brapi.</p>
-              </div>
-              <button onClick={() => setIsModalOpen(false)} className="text-slate-500 hover:text-white text-xs">✕</button>
-            </div>
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6">
+            <h3 className="text-base font-bold text-white mb-1">➕ Cadastrar Novo Ticker</h3>
+            <p className="text-[11px] text-slate-400 mb-4">Selecione uma das sugestões listadas abaixo para carregar a razão social e o setor automaticamente.</p>
+            
             <form onSubmit={salvarTicket} className="space-y-4">
+              <div className="relative">
+                <label className="block text-[10px] text-slate-400 mb-1 font-semibold">Código do Ticker (ex: VALE3)</label>
+                <input type="text" placeholder="Ex: PETR4" value={modalTicker} onChange={e => setModalTicker(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs uppercase text-white font-mono" />
+                {loadingSugestoes && <div className="text-[10px] text-blue-400 font-mono mt-1">Buscando na API...</div>}
+                {sugestoes.length > 0 && (
+                  <div className="absolute bg-slate-950 border border-slate-800 rounded-xl mt-1 w-full max-h-36 overflow-y-auto z-50 text-xs shadow-2xl">
+                    {sugestoes.map((s, idx) => {
+                      const itemTicker = String(s.stock || s).toUpperCase();
+                      return (
+                        <button key={idx} type="button" onClick={() => selecionarSugestao(itemTicker)} className="w-full text-left px-3 py-2 text-slate-300 hover:bg-slate-800 font-mono text-blue-400 border-b border-slate-900 last:border-0">
+                          {itemTicker}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              
               <div>
-                <label className="block text-[11px] text-slate-400 font-medium mb-1">Código do Ativo (Ticker)</label>
-                <div className="flex gap-2">
-                  <input 
-                    type="text" 
-                    placeholder="Ex: PETR4, IVVB11" 
-                    disabled={!!modalId} 
-                    value={modalTicker} 
-                    onChange={e => setModalTicker(e.target.value)} 
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white font-mono uppercase focus:outline-none" 
-                  />
-                  {!modalId && (
-                    <button 
-                      type="button" 
-                      onClick={() => selecionarSugestao(modalTicker)}
-                      className="px-3 bg-blue-600 text-xs font-bold rounded-xl text-white hover:bg-blue-500"
-                    >
-                      Buscar
-                    </button>
-                  )}
+                <label className="block text-[10px] text-slate-400 mb-1 font-semibold">Razão Social</label>
+                <input type="text" placeholder="Nome comercial" value={modalNome} onChange={e => setModalNome(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white" />
+              </div>
+
+              {modalSetorAuto && (
+                <div className="p-3 bg-blue-950/40 border border-blue-900/60 rounded-xl text-xs">
+                  <span className="text-slate-400 block text-[10px] uppercase font-bold">Setor Detectado Automaticamente:</span>
+                  <span className="text-blue-300 font-semibold font-mono">⚡ {modalSetorAuto}</span>
                 </div>
-              </div>
-              <div>
-                <label className="block text-[11px] text-slate-400 font-medium mb-1">Razão Social / Nome Fantasia</label>
-                <input type="text" placeholder="Preenchimento automático" value={modalNome} onChange={e => setModalNome(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white font-medium focus:outline-none" />
-              </div>
-              <div>
-                <label className="block text-[11px] text-slate-400 font-medium mb-1">Setor Identificado (Heurística)</label>
-                <input type="text" disabled value={modalSetorAuto || 'Aguardando ticker...'} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-500 font-medium focus:outline-none" />
-              </div>
+              )}
+
               <div className="flex justify-end gap-2 pt-2">
-                <button type="button" onClick={() => setIsModalOpen(false)} className="px-4 py-2 bg-slate-950 hover:bg-slate-900 text-slate-400 text-xs font-bold rounded-xl border border-slate-800 transition-colors">Cancelar</button>
-                <button type="submit" className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-xl shadow-md transition-colors">Confirmar</button>
+                <button type="button" onClick={() => setIsModalOpen(false)} className="px-4 py-2 bg-slate-800 text-xs rounded-xl">Cancelar</button>
+                <button type="submit" className="px-4 py-2 bg-blue-600 text-xs rounded-xl font-bold">Salvar Ativo</button>
               </div>
             </form>
           </div>
         </div>
       )}
 
-      {/* MODAL: Registrar Ordem */}
       {isTxModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
-          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl shadow-black animate-slide-up space-y-4">
-            <div className="flex justify-between items-start">
-              <div>
-                <h3 className="text-sm font-bold text-white">{txId ? 'Auditar Registro de Ordem' : 'Grave Nova Transação Comercial'}</h3>
-                <p className="text-xs text-slate-400 mt-0.5">O preço médio global do portfólio será recalculado.</p>
-              </div>
-              <button onClick={() => setIsTxModalOpen(false)} className="text-slate-500 hover:text-white text-xs">✕</button>
-            </div>
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6">
+            <h3 className="text-base font-bold text-white mb-3">{txId ? '✏️ Ajustar Ordem Existente' : '💸 Lançar Ordem de Mercado'}</h3>
             <form onSubmit={salvarTransacao} className="space-y-4">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="block text-[11px] text-slate-400 font-medium mb-1">Ticker Vinculado</label>
-                  <select value={txTicker} onChange={e => setTxTicker(e.target.value.toUpperCase())} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white font-mono focus:outline-none">
-                    {tickets.map(t => (
-                      <option key={t.id} value={t.ticker.toUpperCase()}>{t.ticker.toUpperCase()}</option>
-                    ))}
+                  <label className="block text-[10px] text-slate-400 mb-1 font-semibold">Data</label>
+                  <input type="date" value={txData} onChange={e => setTxData(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs" />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-slate-400 mb-1 font-semibold">Ativo</label>
+                  <select disabled={!!txId} value={txTicker} onChange={e => setTxTicker(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs disabled:opacity-50 text-white font-bold">
+                    {tickets.map(t => t && <option key={t.id} value={t.ticker.toUpperCase()}>{t.ticker.toUpperCase()}</option>)}
                   </select>
                 </div>
-                <div>
-                  <label className="block text-[11px] text-slate-400 font-medium mb-1">Natureza da Operação</label>
-                  <div className="grid grid-cols-2 gap-1 bg-slate-950 p-0.5 rounded-xl border border-slate-800">
-                    <button type="button" onClick={() => setTxTipo('COMPRA')} className={`py-1 text-[10px] font-bold rounded-lg transition-all ${txTipo === 'COMPRA' ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/30' : 'text-slate-500'}`}>COMPRA</button>
-                    <button type="button" onClick={() => setTxTipo('VENDA')} className={`py-1 text-[10px] font-bold rounded-lg transition-all ${txTipo === 'VENDA' ? 'bg-rose-600/20 text-rose-400 border border-rose-500/30' : 'text-slate-500'}`}>VENDA</button>
-                  </div>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] text-slate-400 font-medium mb-1">Quantidade Líquida</label>
-                  <input type="number" placeholder="Qtd" value={txQuantidade} onChange={e => setTxQuantidade(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white font-mono focus:outline-none" />
-                </div>
-                <div>
-                  <label className="block text-[11px] text-slate-400 font-medium mb-1">Preço Unitário (R$)</label>
-                  <input type="number" step="0.01" placeholder="Preço" value={txPreco} onChange={e => setTxPreco(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white font-mono focus:outline-none" />
-                </div>
               </div>
               <div>
-                <label className="block text-[11px] text-slate-400 font-medium mb-1">Data da Execução</label>
-                <input type="date" value={txData} onChange={e => setTxData(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white font-mono focus:outline-none" />
+                <label className="block text-[10px] text-slate-400 mb-1 font-semibold">Direção</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button type="button" onClick={() => setTxTipo('COMPRA')} className={`py-2 text-xs font-bold rounded-xl border ${txTipo === 'COMPRA' ? 'bg-emerald-950 text-emerald-400' : 'bg-slate-950 text-slate-500 border-slate-800'}`}>COMPRA</button>
+                  <button type="button" onClick={() => setTxTipo('VENDA')} className={`py-2 text-xs font-bold rounded-xl border ${txTipo === 'VENDA' ? 'bg-red-950 text-red-400 border-red-500' : 'bg-slate-950 text-slate-500 border-slate-800'}`}>VENDA</button>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[10px] text-slate-400 mb-1 font-semibold">Quantidade</label>
+                  <input type="number" placeholder="Qtd" value={txQuantidade} onChange={e => setTxQuantidade(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white" />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-slate-400 mb-1 font-semibold">Preço Custo</label>
+                  <input type="number" step="0.01" placeholder="Preço" value={txPreco} onChange={e => setTxPreco(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white" />
+                </div>
               </div>
               <div className="flex justify-end gap-2 pt-2">
-                <button type="button" onClick={() => setIsTxModalOpen(false)} className="px-4 py-2 bg-slate-950 hover:bg-slate-900 text-slate-400 text-xs font-bold rounded-xl border border-slate-800 transition-colors">Descartar</button>
-                <button type="submit" className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-slate-950 text-xs font-bold rounded-xl shadow-md transition-colors">Salvar Registro</button>
+                <button type="button" onClick={() => setIsTxModalOpen(false)} className="px-4 py-2 bg-slate-800 text-xs rounded-xl">Fechar</button>
+                <button type="submit" className="px-4 py-2 bg-blue-600 text-xs rounded-xl font-bold">Salvar Alterações</button>
               </div>
             </form>
           </div>
