@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler, ArcElement } from 'chart.js';
-import { Line as LineChart, Doughnut as DoughnutChart } from 'react-chartjs-2';
+import { Line as LineChart, Doughnut as DoughnutChart } from 'react-react-chartjs-2';
+import { Line, Doughnut } from 'react-chartjs-2';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler, ArcElement);
 
@@ -16,6 +17,55 @@ const SB_HDR = {
   'Prefer': 'return=representation' 
 };
 
+// Componente auxiliar para evitar travamento de digitação nos inputs numéricos de Metas
+function InputMetaMecanismo({ nomeSetor, valorInicial, aoSalvar }) {
+  const [valorLocal, setValorLocal] = useState(valorInicial);
+
+  useEffect(() => {
+    setValorLocal(valorInicial);
+  }, [valorInicial]);
+
+  const dispararMudanca = () => {
+    const num = parseFloat(valorLocal) || 0;
+    aoSalvar(nomeSetor, num);
+  };
+
+  return (
+    <input 
+      type="number" 
+      value={valorLocal} 
+      onChange={e => setValorLocal(e.target.value)}
+      onBlur={dispararMudanca}
+      onKeyDown={e => { if(e.key === 'Enter') dispararMudanca(); }}
+      className="w-full px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-xl text-xs font-mono text-slate-200 focus:outline-none focus:border-purple-600 text-center" 
+    />
+  );
+}
+
+function InputPesoAtivoMecanismo({ ticker, setor, valorInicial, aoSalvar }) {
+  const [valorLocal, setValorLocal] = useState(valorInicial);
+
+  useEffect(() => {
+    setValorLocal(valorInicial);
+  }, [valorInicial]);
+
+  const dispararMudanca = () => {
+    const num = parseFloat(valorLocal) || 0;
+    aoSalvar(ticker, setor, num);
+  };
+
+  return (
+    <input 
+      type="number" 
+      value={valorLocal} 
+      onChange={e => setValorLocal(e.target.value)}
+      onBlur={dispararMudanca}
+      onKeyDown={e => { if(e.key === 'Enter') dispararMudanca(); }}
+      className="w-full px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs font-mono text-slate-300 focus:outline-none text-center"
+    />
+  );
+}
+
 export default function App() {
   const [abaAtiva, setAbaAtiva] = useState('home');
 
@@ -24,7 +74,6 @@ export default function App() {
   const [transacoes, setTransacoes] = useState([]); 
   const [loading, setLoading] = useState(false);
   const [isCronRunning, setIsCronRunning] = useState(false);
-  const [lastCheckTime, setLastCheckTime] = useState('Nunca verificado');
   
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalId, setModalId] = useState('');
@@ -40,13 +89,10 @@ export default function App() {
   const [txPreco, setTxPreco] = useState('');
   const [txData, setTxData] = useState(new Date().toISOString().split('T')[0]);
 
-  const [sugestoes, setSugestoes] = useState([]);
-  const [loadingSugestoes, setLoadingSugestoes] = useState(false);
-  
+  const [ativosSelecionados, setAtivosSelecionados] = useState([]); 
   const hojeStr = new Date().toISOString().split('T')[0];
   const [dataInicio, setDataInicio] = useState(hojeStr);
   const [dataFim, setDataFim] = useState(hojeStr);
-  const [ativosSelecionados, setAtivosSelecionados] = useState([]); 
   
   const [toast, setToast] = useState({ show: false, message: '', type: 'info' });
 
@@ -109,7 +155,6 @@ export default function App() {
       
       setSetoresMeta(mapeamentoSetores);
       setAtivosMeta(mapeamentoAtivos);
-      setLastCheckTime(new Date().toLocaleTimeString('pt-BR'));
     } catch (err) {
       console.error(err);
       showToast("Erro na sincronização: " + err.message, 'error');
@@ -122,28 +167,24 @@ export default function App() {
     carregarDados();
   }, []);
 
-  // Monitora e gera alertas automáticos sobre rebalanceamento e limites
   useEffect(() => {
     const novosAlertas = [];
-    
-    // 1. Validar soma global de setores
     const totalSetores = Object.values(setoresMeta).reduce((acc, curr) => acc + curr, 0);
+    
     if (totalSetores > 100) {
-      novosAlertas.push(`⚠️ Alocação macro inválida: A soma dos percentuais dos setores é de ${totalSetores.toFixed(1)}%, ultrapassando o limite estrito de 100%.`);
+      novosAlertas.push(`⚠️ Alocação macro inválida: A soma das categorias é de ${totalSetores.toFixed(1)}%, ultrapassando o limite estrito de 100%.`);
     }
 
-    // 2. Validar cada setor individualmente em relação aos seus ativos internos
     Object.entries(setoresMeta).forEach(([nomeSetor, metaLimiteSetor]) => {
       let somaAtivosDoSetor = 0;
-
       Object.entries(ativosMeta).forEach(([ticker, info]) => {
         if (info.setor === nomeSetor) {
           somaAtivosDoSetor += info.metaGrupo;
         }
       });
 
-      if (somaAtivosDoSetor > metaLimiteSetor && metaLimiteSetor > 0) {
-        novosAlertas.push(`🚨 Carteira Desbalanceada (${nomeSetor}): A soma planejada para os ativos (${somaAtivosDoSetor}%) excedeu a meta limite estipulada para o setor (${metaLimiteSetor}%). A carteira precisa ser rebalanceada.`);
+      if (somaAtivosDoSetor > 100) {
+        novosAlertas.push(`🚨 Categoria Desbalanceada (${nomeSetor}): A soma dos pesos internos dos ativos está dando ${somaAtivosDoSetor}%, ultrapassando 100% internos.`);
       }
     });
 
@@ -160,7 +201,7 @@ export default function App() {
           if (match && match.sector) return match.sector;
         }
       }
-    } catch (e) { console.error('Fallback de setor via /quote/list falhou:', e); }
+    } catch (e) { console.error(e); }
     return '';
   };
 
@@ -175,8 +216,6 @@ export default function App() {
     const tickerComSufixo = limpo.endsWith('.SA') ? limpo : `${limpo}.SA`;
     
     setModalTicker(limpo.replace('.SA', '')); 
-    setSugestoes([]);
-    setLoadingSugestoes(true);
     try {
       const res = await fetch(`https://brapi.dev/api/quote/${tickerComSufixo}?modules=summaryProfile&token=${BRAPI_TOKEN}`);
       let nomeCompleto = '';
@@ -187,32 +226,18 @@ export default function App() {
         if (data && data.results && data.results[0]) {
           const ativoObjeto = data.results[0];
           nomeCompleto = ativoObjeto.longName || ativoObjeto.shortName || 'Empresa Cadastrada';
-
-          setorExtraido =
-            ativoObjeto.summaryProfile?.sector ||
-            ativoObjeto.summaryProfile?.sectorDisp ||
-            ativoObjeto.summaryProfile?.industry ||
-            ativoObjeto.summaryProfile?.industryDisp ||
-            ativoObjeto.sector ||
-            '';
+          setorExtraido = ativoObjeto.summaryProfile?.sector || ativoObjeto.sector || '';
         }
       }
 
-      if (!setorExtraido) {
-        setorExtraido = await buscarSetorFallbackViaLista(limpo);
-      }
-
-      if (!setorExtraido) {
-        setorExtraido = inferirSetorPorSufixo(limpo);
-      }
+      if (!setorExtraido) setorExtraido = await buscarSetorFallbackViaLista(limpo);
+      if (!setorExtraido) setorExtraido = inferirSetorPorSufixo(limpo);
 
       if (nomeCompleto) setModalNome(nomeCompleto);
       setModalSetorAuto(setorExtraido);
     } catch (e) {
-      console.error(e);
       setModalSetorAuto(inferirSetorPorSufixo(limpo));
     }
-    finally { setLoadingSugestoes(false); }
   };
 
   const abrirModalEditarTicket = async (id, ticker, nomeAtual) => {
@@ -364,16 +389,24 @@ export default function App() {
   };
 
   const persistirSetorAtivo = async (tkrChave, setorDefinido) => {
+    // Garante que o setor pai exista
     await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
       method: 'POST',
       headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
       body: JSON.stringify({ nome: setorDefinido, meta_percentual: 0 })
     });
 
+    // Insere ou atualiza o ativo vinculado a este setor de forma automática
     await fetch(`${SB_URL}/rest/v1/finance_target_assets`, {
       method: 'POST',
       headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
       body: JSON.stringify({ ticker: tkrChave, setor_nome: setorDefinido, meta_group_percentual: 0 })
+    });
+
+    await fetch(`${SB_URL}/rest/v1/finance_target_assets?ticker=eq.${tkrChave}`, {
+      method: 'PATCH',
+      headers: SB_HDR,
+      body: JSON.stringify({ setor_nome: setorDefinido })
     });
   };
 
@@ -386,15 +419,16 @@ export default function App() {
     try {
       if (modalId) {
         await fetch(`${SB_URL}/rest/v1/finance_tickets?id=eq.${modalId}`, { method: 'PATCH', headers: SB_HDR, body: JSON.stringify({ nome: modalNome }) });
-        await persistirSetorAtivo(tkrChave, setorDefinido);
       } else {
         await fetch(`${SB_URL}/rest/v1/finance_tickets`, { 
           method: 'POST', 
           headers: SB_HDR, 
           body: JSON.stringify({ ticker: tkrChave, nome: modalNome, quantidade: 0, preco_custo: 0 }) 
         });
-        await persistirSetorAtivo(tkrChave, setorDefinido);
       }
+      
+      // PERSISTÊNCIA AUTOMÁTICA EM MAIS DE UMA TABELA (Resolve a sincronização automática no BD)
+      await persistirSetorAtivo(tkrChave, setorDefinido);
       setIsModalOpen(false);
       await carregarDados();
       showToast(`Ticker ${tkrChave} sincronizado no hub.`, 'success');
@@ -413,14 +447,12 @@ export default function App() {
     } catch (err) { showToast(err.message, 'error'); }
   };
 
-  const atualizarSetorMetaBD = async (setorAlterado, novoValor) => {
-    const valorNumerico = parseFloat(novoValor) || 0;
-    
+  const atualizarSetorMetaBD = async (setorAlterado, valorNumerico) => {
     const copiaSetores = { ...setoresMeta, [setorAlterado]: valorNumerico };
     const somaFutura = Object.values(copiaSetores).reduce((acc, curr) => acc + curr, 0);
 
     if (somaFutura > 100) {
-      showToast(`Bloqueado: A soma das metas dos setores não pode ultrapassar 100% (Atual: ${somaFutura}%).`, 'error');
+      showToast(`Bloqueado: A soma dos setores não pode passar de 100% (Tentativa: ${somaFutura}%).`, 'error');
       return;
     }
 
@@ -431,6 +463,7 @@ export default function App() {
         body: JSON.stringify({ meta_percentual: valorNumerico })
       });
       setSetoresMeta(copiaSetores);
+      showToast('Meta do setor salva.', 'success');
     } catch (err) { console.error(err); }
   };
 
@@ -455,9 +488,7 @@ export default function App() {
         headers: SB_HDR,
         body: JSON.stringify({ setor_nome: setor || null, meta_group_percentual: mGrupo })
       });
-    } catch (e) { 
-      console.error(e); 
-    }
+    } catch (e) { console.error(e); }
   };
 
   const alternarSelecaoAtivo = (ticker) => {
@@ -621,9 +652,9 @@ export default function App() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-900/20 p-2 rounded-2xl border border-slate-900/60">
               <div className="bg-slate-900/60 border border-slate-900/80 backdrop-blur-sm rounded-2xl p-6 h-72 shadow-lg">
                 {Object.keys(setoresMeta).length > 0 ? (
-                  <DoughnutChart data={prepararPizzaMeta()} options={opcoesPizzaPercentual('Alocação Objetiva / Meta (%)')} />
+                  <DoughnutChart data={prepararPizzaMeta()} options={opcoesPizzaPercentual('Alocação por Categoria / Setores (%)')} />
                 ) : (
-                  <div className="text-xs text-slate-500 font-medium text-center pt-28">Configure as metas na aba superior para visualizar.</div>
+                  <div className="text-xs text-slate-500 font-medium text-center pt-28">Configure as metas de categoria na aba superior.</div>
                 )}
               </div>
               <div className="bg-slate-900/60 border border-slate-900/80 backdrop-blur-sm rounded-2xl p-6 h-72 shadow-lg">
@@ -689,7 +720,7 @@ export default function App() {
                         <div className="mt-5 bg-slate-950 p-2.5 rounded-xl border border-slate-900">
                           <div className="flex justify-between text-[11px] mb-1.5 font-medium">
                             <span className="text-slate-400">Atual: <strong className="font-mono text-blue-400">{pctReal.toFixed(1)}%</strong></span>
-                            <span className="text-slate-400">Meta: <strong className="font-mono text-purple-400">{pctAlvoGlobal.toFixed(1)}%</strong></span>
+                            <span className="text-slate-400">Meta Global: <strong className="font-mono text-purple-400">{pctAlvoGlobal.toFixed(1)}%</strong></span>
                           </div>
                           <div className="w-full h-1.5 bg-slate-900 rounded-full overflow-hidden">
                             <div className="bg-gradient-to-r from-blue-500 to-indigo-500 h-full transition-all" style={{ width: `${Math.min(pctReal, 100)}%` }} />
@@ -835,7 +866,7 @@ export default function App() {
             {alertasSistema.length > 0 && (
               <div className="bg-rose-950/40 border border-rose-900/60 rounded-2xl p-5 space-y-2.5 shadow-md">
                 <h4 className="text-xs font-bold text-rose-400 uppercase tracking-wider flex items-center gap-2">
-                  <span>📢</span> Alertas de Inconsistência e Rebalanceamento detectados
+                  <span>📢</span> Alertas de Alocação e Rebalanceamento
                 </h4>
                 <div className="space-y-1.5">
                   {alertasSistema.map((alerta, idx) => (
@@ -849,11 +880,11 @@ export default function App() {
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
               
-              {/* LISTAGEM E PARAMETRIZAÇÃO DOS SETORES METAS (API BRAPI) */}
+              {/* DEFINIÇÃO DE PERCENTUAL POR CATEGORIA (MÁXIMO 100%) - CORRIGIDO SEM TRAVAMENTO */}
               <div className="bg-slate-900/40 border border-slate-900 p-6 rounded-2xl space-y-6 shadow-md">
                 <div>
-                  <h3 className="text-sm font-bold text-slate-200">📊 Metas por Setores da API</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">Defina os limites macro da sua carteira (Limite: 100%).</p>
+                  <h3 className="text-sm font-bold text-slate-200">📊 1. Percentual por Categoria (Max 100%)</h3>
+                  <p className="text-xs text-slate-400 mt-0.5">Estipule o teto macro. Salva ao sair do campo ou apertar Enter.</p>
                 </div>
 
                 <div className="space-y-3 max-h-[400px] overflow-y-auto pr-1">
@@ -861,28 +892,26 @@ export default function App() {
                     <div key={nome} className="bg-slate-950 p-3.5 rounded-xl border border-slate-900">
                       <span className="text-xs font-bold text-slate-300 block mb-2">{nome}</span>
                       <div className="flex items-center gap-2">
-                        <input 
-                          type="number" 
-                          max="100"
-                          value={meta} 
-                          onChange={e => atualizarSetorMetaBD(nome, e.target.value)} 
-                          className="w-full px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-xl text-xs font-mono text-slate-200 focus:outline-none focus:border-purple-600 text-center" 
+                        <InputMetaMecanismo 
+                          nomeSetor={nome} 
+                          valorInicial={meta} 
+                          aoSalvar={atualizarSetorMetaBD} 
                         />
                         <span className="text-xs text-slate-500 font-bold">% meta</span>
                       </div>
                     </div>
                   ))}
                   {Object.keys(setoresMeta).length === 0 && (
-                    <p className="text-xs text-slate-500 font-medium text-center">Nenhum setor catalogado pelos tickers ativos.</p>
+                    <p className="text-xs text-slate-500 font-medium text-center">Cadastre um ticker na home para habilitar as categorias automaticamente.</p>
                   )}
                 </div>
               </div>
 
-              {/* MAPEAMENTO INTERNO DE ATIVOS DENTRO DE SEUS SETORES */}
+              {/* DISTRIBUIÇÃO INTERNA DOS ATIVOS DENTRO DA CATEGORIA */}
               <div className="lg:col-span-2 bg-slate-900/40 border border-slate-900 p-6 rounded-2xl space-y-6 shadow-md">
                 <div>
-                  <h3 className="text-sm font-bold text-slate-200">🔗 Distribuição e Pesos por Ativo</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">Os ativos herdam a nomenclatura oficial e não podem ultrapassar a meta total do seu setor pai.</p>
+                  <h3 className="text-sm font-bold text-slate-200">🔗 2. Distribuição e Pesos por Ativo</h3>
+                  <p className="text-xs text-slate-400 mt-0.5">Defina o peso relativo (0% a 100%) que este ativo representa exclusivamente dentro de sua categoria pai.</p>
                 </div>
                 <div className="space-y-2.5 max-h-[460px] overflow-y-auto pr-2">
                   {tickets.map(t => {
@@ -907,12 +936,11 @@ export default function App() {
                         </div>
                         <div>
                           <div className="flex items-center gap-2">
-                            <input 
-                              type="number" 
-                              placeholder="Peso Grupo" 
-                              value={metaInfo.metaGrupo} 
-                              onChange={e => vincularAtivoAoSetorBD(t.ticker, metaInfo.setor, e.target.value)}
-                              className="w-full px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs font-mono text-slate-300 focus:outline-none text-center"
+                            <InputPesoAtivoMecanismo 
+                              ticker={t.ticker}
+                              setor={metaInfo.setor}
+                              valorInicial={metaInfo.metaGrupo}
+                              aoSalvar={vincularAtivoAoSetorBD}
                             />
                             <span className="text-[11px] text-slate-500 font-medium">% no setor</span>
                           </div>
@@ -939,32 +967,27 @@ export default function App() {
               <button onClick={() => setIsModalOpen(false)} className="text-slate-500 hover:text-white text-xs">✕</button>
             </div>
             <form onSubmit={salvarTicket} className="space-y-4">
-              <div className="relative">
+              <div>
                 <label className="block text-[11px] text-slate-400 font-medium mb-1">Código do Ativo (Ticker)</label>
-                <input 
-                  type="text" 
-                  placeholder="Ex: PETR4, IVVB11" 
-                  disabled={!!modalId} 
-                  value={modalTicker} 
-                  onChange={e => setModalTicker(e.target.value)} 
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white font-mono uppercase focus:outline-none" 
-                />
-                {loadingSugestoes && <span className="absolute right-3 bottom-2.5 text-[10px] text-blue-400 font-mono animate-pulse">Buscando...</span>}
-                
-                {sugestoes.length > 0 && (
-                  <div className="absolute left-0 right-0 mt-1 bg-slate-950 border border-slate-800 rounded-xl overflow-hidden z-10 shadow-xl max-h-36 overflow-y-auto">
-                    {sugestoes.map(s => (
-                      <button 
-                        key={s.stock} 
-                        type="button" 
-                        onClick={() => selecionarSugestao(s.stock)} 
-                        className="w-full text-left px-3 py-2 text-xs font-mono text-slate-300 hover:bg-slate-900 transition-colors border-b border-slate-900 last:border-0"
-                      >
-                        {s.stock} - <span className="text-slate-500 font-sans">{s.name}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
+                <div className="flex gap-2">
+                  <input 
+                    type="text" 
+                    placeholder="Ex: PETR4, IVVB11" 
+                    disabled={!!modalId} 
+                    value={modalTicker} 
+                    onChange={e => setModalTicker(e.target.value)} 
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white font-mono uppercase focus:outline-none" 
+                  />
+                  {!modalId && (
+                    <button 
+                      type="button" 
+                      onClick={() => selecionarSugestao(modalTicker)}
+                      className="px-3 bg-blue-600 text-xs font-bold rounded-xl text-white hover:bg-blue-500"
+                    >
+                      Buscar
+                    </button>
+                  )}
+                </div>
               </div>
               <div>
                 <label className="block text-[11px] text-slate-400 font-medium mb-1">Razão Social / Nome Fantasia</label>
