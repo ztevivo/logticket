@@ -53,7 +53,7 @@ export default function App() {
   // Notificações
   const [toast, setToast] = useState({ show: false, message: '', type: 'info' });
 
-  // ── ESTADOS DA CARTEIRA META (SUPABASE FALLBACK LOCAL) ────────────────────
+  // ── ESTADOS DA CARTEIRA META ──────────────────────────────────────────────
   const [setoresMeta, setSetoresMeta] = useState({});
   const [ativosMeta, setAtivosMeta] = useState({});
   const [novoSetorNome, setNovoSetorNome] = useState('');
@@ -64,11 +64,10 @@ export default function App() {
     setTimeout(() => setToast({ show: false, message: '', type: 'info' }), 4000);
   };
 
-  // ── LEITURA COMPLETA DOS DADOS (INCLUINDO AS METAS DO SUPABASE) ───────────
+  // ── LEITURA COMPLETA DOS DADOS ────────────────────────────────────────────
   const carregarDados = async () => {
     setLoading(true);
     try {
-      // Carregar Tabelas Principais
       const resTickets = await fetch(`${SB_URL}/rest/v1/finance_tickets?order=ticker.asc`, { method: 'GET', headers: SB_HDR });
       const dataTickets = await resTickets.json();
       
@@ -78,7 +77,6 @@ export default function App() {
       const resTx = await fetch(`${SB_URL}/rest/v1/finance_transactions?order=registrado_em.desc`, { method: 'GET', headers: SB_HDR });
       const dataTx = await resTx.json();
 
-      // Carregar Tabelas de Metas do Supabase (com fallback seguro caso não criadas)
       let mapeamentoSetores = {};
       let mapeamentoAtivos = {};
       
@@ -95,7 +93,7 @@ export default function App() {
           arrA.forEach(a => { mapeamentoAtivos[a.ticker.toUpperCase()] = { setor: a.setor_nome, metaGrupo: parseFloat(a.meta_group_percentual || a.meta_grupo_percentual || 0) }; });
         }
       } catch (e) {
-        console.warn("Tabelas de metas no Supabase ainda não configuradas. Usando modo de simulação.");
+        console.warn("Tabelas de metas no Supabase ainda não configuradas.");
       }
 
       setTickets(dataTickets || []);
@@ -223,6 +221,7 @@ export default function App() {
     });
   };
 
+  // ── CONTROLE DO MODAL DE ORDENS (CRIAÇÃO OU CORREÇÃO) ────────────────────
   const abrirModalTransacao = (idOrdem = '', tickerPredefinido = '') => {
     if (idOrdem) {
       const txExistente = transacoes.find(t => t.id === idOrdem);
@@ -283,6 +282,7 @@ export default function App() {
       const novasTx = await resRefetch.json();
       await sincronizarPosicaoAtivo(ticker, novasTx);
       await carregarDados();
+      showToast('Lançamento removido.');
     } catch (e) { showToast(e.message, 'error'); }
   };
 
@@ -354,7 +354,6 @@ export default function App() {
         headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
         body: JSON.stringify({ ticker: tkr, setor_nome: setor || null, meta_group_percentual: mGrupo })
       });
-      // Fallback de update caso já exista na constraint
       await fetch(`${SB_URL}/rest/v1/finance_target_assets?ticker=eq.${tkr}`, {
         method: 'PATCH',
         headers: SB_HDR,
@@ -364,14 +363,13 @@ export default function App() {
     } catch (e) { console.error(e); }
   };
 
-  // CÁLCULO PATRIMONIAL REAL GLOBAL
   const totalPatrimonioReal = tickets.reduce((acc, t) => {
     const logs = logsHistoricos.filter(l => l.ticker.toUpperCase() === t.ticker.toUpperCase());
     const precoMercado = logs[logs.length - 1] ? parseFloat(logs[logs.length - 1].preco) : parseFloat(t.preco_custo || 0);
     return acc + (parseInt(t.quantidade || 0) * precoMercado);
   }, 0);
 
-  // ── ESTRUTURAÇÃO DOS GRÁFICOS PIZZA ───────────────────────────────────────
+  // ── CONFIGURAÇÕES GRÁFICAS ────────────────────────────────────────────────
   const prepararPizzaReal = () => {
     const ativosComSaldo = tickets.filter(t => parseInt(t.quantidade || 0) > 0);
     return {
@@ -586,7 +584,7 @@ export default function App() {
           </div>
         </section>
 
-        {/* TABELA DE OPERAÇÕES FINANCEIRAS */}
+        {/* TABELA DE OPERAÇÕES FINANCEIRAS (RESTAURADO BOTÃO DE AJUSTAR) */}
         <section className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
           <div className="p-4 bg-slate-900/50 border-b border-slate-800">
             <h3 className="text-sm font-bold text-slate-200">📋 Livro de Ordens e Movimentações Financeiras</h3>
@@ -615,8 +613,9 @@ export default function App() {
                     </td>
                     <td className="p-3 font-mono">{tx.quantidade} un</td>
                     <td className="p-3 font-mono">R$ {parseFloat(tx.preco || 0).toFixed(2)}</td>
-                    <td className="p-3 text-center">
-                      <button onClick={() => excluirTransacao(tx.id, tx.ticker)} className="text-slate-600 hover:text-red-400">Deletar</button>
+                    <td className="p-3 text-center flex items-center justify-center gap-4">
+                      <button onClick={() => abrirModalTransacao(tx.id)} className="text-slate-400 hover:text-blue-400 font-medium transition-colors" title="Ajustar ordem">✏️ Ajustar</button>
+                      <button onClick={() => excluirTransacao(tx.id, tx.ticker)} className="text-slate-500 hover:text-red-400 transition-colors">✕ Deletar</button>
                     </td>
                   </tr>
                 ))}
@@ -630,25 +629,40 @@ export default function App() {
       {isTxModalOpen && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6">
-            <h3 className="text-base font-bold text-white mb-3">💸 Lançar Ordem de Mercado</h3>
+            <h3 className="text-base font-bold text-white mb-3">{txId ? '✏️ Ajustar Ordem Existente' : '💸 Lançar Ordem de Mercado'}</h3>
             <form onSubmit={salvarTransacao} className="space-y-4">
               <div className="grid grid-cols-2 gap-2">
-                <input type="date" value={txData} onChange={e => setTxData(e.target.value)} className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs" />
-                <select value={txTicker} onChange={e => setTxTicker(e.target.value)} className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs">
-                  {tickets.map(t => <option key={t.id} value={t.ticker.toUpperCase()}>{t.ticker.toUpperCase()}</option>)}
-                </select>
+                <div>
+                  <label className="block text-[10px] text-slate-400 mb-1 font-semibold">Data</label>
+                  <input type="date" value={txData} onChange={e => setTxData(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs" />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-slate-400 mb-1 font-semibold">Ativo</label>
+                  <select disabled={!!txId} value={txTicker} onChange={e => setTxTicker(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs disabled:opacity-50">
+                    {tickets.map(t => <option key={t.id} value={t.ticker.toUpperCase()}>{t.ticker.toUpperCase()}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="block text-[10px] text-slate-400 mb-1 font-semibold">Direção</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button type="button" onClick={() => setTxTipo('COMPRA')} className={`py-2 text-xs font-bold rounded-xl border ${txTipo === 'COMPRA' ? 'bg-emerald-950 text-emerald-400 border-emerald-500' : 'bg-slate-950 text-slate-500 border-slate-800'}`}>COMPRA</button>
+                  <button type="button" onClick={() => setTxTipo('VENDA')} className={`py-2 text-xs font-bold rounded-xl border ${txTipo === 'VENDA' ? 'bg-red-950 text-red-400 border-red-500' : 'bg-slate-950 text-slate-500 border-slate-800'}`}>VENDA</button>
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-2">
-                <button type="button" onClick={() => setTxTipo('COMPRA')} className={`py-2 text-xs font-bold rounded-xl border ${txTipo === 'COMPRA' ? 'bg-emerald-950 text-emerald-400 border-emerald-500' : 'bg-slate-950 text-slate-500 border-slate-800'}`}>COMPRA</button>
-                <button type="button" onClick={() => setTxTipo('VENDA')} className={`py-2 text-xs font-bold rounded-xl border ${txTipo === 'VENDA' ? 'bg-red-950 text-red-400 border-red-500' : 'bg-slate-950 text-slate-500 border-slate-800'}`}>VENDA</button>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <input type="number" placeholder="Qtd" value={txQuantidade} onChange={e => setTxQuantidade(e.target.value)} className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs" />
-                <input type="number" step="0.01" placeholder="Preço" value={txPreco} onChange={e => setTxPreco(e.target.value)} className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs" />
+                <div>
+                  <label className="block text-[10px] text-slate-400 mb-1 font-semibold">Quantidade</label>
+                  <input type="number" placeholder="Qtd" value={txQuantidade} onChange={e => setTxQuantidade(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs" />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-slate-400 mb-1 font-semibold">Preço Custo</label>
+                  <input type="number" step="0.01" placeholder="Preço" value={txPreco} onChange={e => setTxPreco(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs" />
+                </div>
               </div>
               <div className="flex justify-end gap-2 pt-2">
                 <button type="button" onClick={() => setIsTxModalOpen(false)} className="px-4 py-2 bg-slate-800 text-xs rounded-xl">Fechar</button>
-                <button type="submit" className="px-4 py-2 bg-blue-600 text-xs rounded-xl font-bold">Salvar Ordem</button>
+                <button type="submit" className="px-4 py-2 bg-blue-600 text-xs rounded-xl font-bold">Salvar Alterações</button>
               </div>
             </form>
           </div>
