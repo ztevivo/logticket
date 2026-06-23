@@ -145,7 +145,7 @@ export default function App() {
         if (data.results && data.results[0]) {
           const ativoObjeto = data.results[0];
           const nomeCompleto = ativoObjeto.longName || ativoObjeto.shortName || 'Empresa Cadastrada';
-          const setorExtraido = ativoObjeto.sector || ativoObjeto.industry || 'Outros / Não Classificado';
+          const setorExtraido = ativoObjeto.industry || 'Outros / Não Classificado';
           
           setModalNome(nomeCompleto);
           setModalSetorAuto(setorExtraido);
@@ -255,7 +255,7 @@ export default function App() {
         await fetch(`${SB_URL}/rest/v1/finance_transactions?id=eq.${txId}`, {
           method: 'PATCH',
           headers: SB_HDR,
-          body: JSON.stringify({ ticker: tkr, tipo: txTipo, Administrative: qty, preco: prc, registrado_em: dataIso })
+          body: JSON.stringify({ ticker: tkr, tipo: txTipo, quantidade: qty, preco: prc, registrado_em: dataIso })
         });
       } else {
         await fetch(`${SB_URL}/rest/v1/finance_transactions`, {
@@ -304,7 +304,7 @@ export default function App() {
           body: JSON.stringify({ ticker: tkrChave, nome: modalNome, quantidade: 0, preco_custo: 0 }) 
         });
 
-        // 2. Abordagem Segura: Verifica se o setor já existe antes de tentar inserir
+        // 2. Verifica se o setor já existe antes de tentar inserir
         const checarSetor = await fetch(`${SB_URL}/rest/v1/finance_target_sectors?nome=eq.${encodeURIComponent(setorDefinido)}`, { method: 'GET', headers: SB_HDR });
         const dadosSetorExistem = await checarSetor.json();
 
@@ -328,7 +328,7 @@ export default function App() {
       }
       setIsModalOpen(false);
       await carregarDados();
-      showToast(`Ticker ${tkrChave} cadastrado com setor ${setorDefinido}.`);
+      showToast(`Ticker ${tkrChave} cadastrado.`);
     } catch (err) { showToast(err.message, 'error'); }
   };
 
@@ -689,7 +689,7 @@ export default function App() {
               <div className="space-y-4 bg-slate-950 p-4 rounded-xl border border-slate-800/80">
                 <div>
                   <h3 className="text-xs font-bold uppercase tracking-wider text-blue-400">2. Peso de Ativos no Grupo</h3>
-                  <p className="text-[11px] text-slate-500">Mude a categoria ou o peso de distribuição interna do ativo.</p>
+                  <p className="text-[11px] text-slate-500">Mude a categoria ou o peso de dispersão interna do ativo.</p>
                 </div>
 
                 <div className="max-h-80 overflow-y-auto space-y-2 pr-1">
