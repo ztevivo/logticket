@@ -1,3 +1,4 @@
+// src/App.jsx
 import React, { useState, useEffect } from 'react';
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler, ArcElement } from 'chart.js';
 import { Line, Doughnut } from 'react-chartjs-2';
@@ -63,22 +64,18 @@ export default function App() {
   const carregarDados = async () => {
     setLoading(true);
     try {
-      // Fetch Tickets
       const resTickets = await fetch(`${SB_URL}/rest/v1/finance_tickets?order=ticker.asc`, { method: 'GET', headers: SB_HDR });
       const dataTickets = await resTickets.json();
       
-      // Fetch Logs
       const resLogs = await fetch(`${SB_URL}/rest/v1/finance_price_logs?order=registrado_em.asc`, { method: 'GET', headers: SB_HDR });
       const dataLogs = await resLogs.json();
 
-      // Fetch Transações
       const resTx = await fetch(`${SB_URL}/rest/v1/finance_transactions?order=registrado_em.desc`, { method: 'GET', headers: SB_HDR });
       const dataTx = await resTx.json();
 
       let mapeamentoSetores = {};
       let mapeamentoAtivos = {};
       
-      // Blocos de proteção individual para tabelas secundárias
       try {
         const resS = await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, { method: 'GET', headers: SB_HDR });
         if (resS.ok) {
@@ -108,7 +105,6 @@ export default function App() {
         }
       } catch (e) { console.error("Erro ao carregar metas de ativos:", e); }
 
-      // Garante que só salvamos nos estados se o retorno for uma Array legítima
       setTickets(Array.isArray(dataTickets) ? dataTickets : []);
       setLogsHistoricos(Array.isArray(dataLogs) ? dataLogs : []);
       setTransacoes(Array.isArray(dataTx) ? dataTx : []);
@@ -149,18 +145,22 @@ export default function App() {
   }, [modalTicker, modalId]);
 
   const selecionarSugestao = async (tickerSelecionado) => {
-    const limpo = tickerSelecionado.toUpperCase().trim();
-    setModalTicker(limpo);
+    let limpo = tickerSelecionado.toUpperCase().trim();
+    const tickerComSufixo = limpo.endsWith('.SA') ? limpo : `${limpo}.SA`;
+    
+    setModalTicker(limpo.replace('.SA', '')); 
     setSugestoes([]);
     setLoadingSugestoes(true);
     try {
-      const res = await fetch(`https://brapi.dev/api/quote/${limpo}?token=${BRAPI_TOKEN}`);
+      const res = await fetch(`https://brapi.dev/api/quote/${tickerComSufixo}?token=${BRAPI_TOKEN}`);
       if (res.ok) {
         const data = await res.json();
         if (data && data.results && data.results[0]) {
           const ativoObjeto = data.results[0];
           const nomeCompleto = ativoObjeto.longName || ativoObjeto.shortName || 'Empresa Cadastrada';
-          const setorExtraido = ativoObjeto.industry || 'Outros / Não Classificado';
+          
+          // Mapeamento dinâmico para extrair o setor de múltiplos locais possíveis na API do BRAPI
+          const setorExtraido = ativoObjeto.industry || ativoObjeto.sector || ativoObjeto.segment || 'Outros / Não Classificado';
           
           setModalNome(nomeCompleto);
           setModalSetorAuto(setorExtraido);
@@ -174,7 +174,11 @@ export default function App() {
     if (!Array.isArray(tickets) || tickets.length === 0) return;
     setIsCronRunning(true);
     try {
-      const listaTickers = tickets.map(t => t.ticker.toUpperCase().trim()).join(',');
+      const listaTickers = tickets.map(t => {
+        const tk = t.ticker.toUpperCase().trim();
+        return tk.endsWith('.SA') ? tk : `${tk}.SA`;
+      }).join(',');
+
       const logsNovos = [];
       let precosMercado = {};
 
@@ -184,7 +188,8 @@ export default function App() {
         if (dadosMercado && dadosMercado.results) {
           dadosMercado.results.forEach(ativo => {
             if (ativo && ativo.symbol && ativo.regularMarketPrice !== undefined) {
-              precosMercado[ativo.symbol.toUpperCase().trim()] = parseFloat(ativo.regularMarketPrice);
+              const chaveLimpa = ativo.symbol.toUpperCase().replace('.SA', '').trim();
+              precosMercado[chaveLimpa] = parseFloat(ativo.regularMarketPrice);
             }
           });
         }
@@ -407,7 +412,6 @@ export default function App() {
     }
   };
 
-  // Cálculos Computados Defensivos (Garantem que loops de arrays vazias não quebram)
   const totalPatrimonioReal = Array.isArray(tickets) ? tickets.reduce((acc, t) => {
     if (!t) return acc;
     const logs = Array.isArray(logsHistoricos) ? logsHistoricos.filter(l => l && l.ticker && l.ticker.toUpperCase() === t.ticker.toUpperCase()) : [];
@@ -726,15 +730,23 @@ export default function App() {
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6">
             <h3 className="text-base font-bold text-white mb-1">➕ Cadastrar Novo Ticker</h3>
-            <p className="text-[11px] text-slate-400 mb-4">O setor comercial será identificado e salvo de forma automática.</p>
+            <p className="text-[11px] text-slate-400 mb-4">Selecione uma das sugestões listadas abaixo para carregar a razão social e o setor automaticamente.</p>
             
             <form onSubmit={salvarTicket} className="space-y-4">
               <div className="relative">
                 <label className="block text-[10px] text-slate-400 mb-1 font-semibold">Código do Ticker (ex: VALE3)</label>
                 <input type="text" placeholder="Ex: PETR4" value={modalTicker} onChange={e => setModalTicker(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs uppercase text-white font-mono" />
+                {loadingSugestoes && <div className="text-[10px] text-blue-400 font-mono mt-1">Buscando na API...</div>}
                 {sugestoes.length > 0 && (
-                  <div className="absolute bg-slate-950 border border-slate-800 rounded-xl mt-1 w-full max-h-36 overflow-y-auto z-50 text-xs">
-                    {sugestoes.map((s, idx) => <button key={idx} type="button" onClick={() => selecionarSugestao(s.stock || s)} className="w-full text-left px-3 py-2 text-slate-300 hover:bg-slate-800 font-mono text-blue-400">{String(s.stock || s).toUpperCase()}</button>)}
+                  <div className="absolute bg-slate-950 border border-slate-800 rounded-xl mt-1 w-full max-h-36 overflow-y-auto z-50 text-xs shadow-2xl">
+                    {sugestoes.map((s, idx) => {
+                      const itemTicker = String(s.stock || s).toUpperCase();
+                      return (
+                        <button key={idx} type="button" onClick={() => selecionarSugestao(itemTicker)} className="w-full text-left px-3 py-2 text-slate-300 hover:bg-slate-800 font-mono text-blue-400 border-b border-slate-900 last:border-0">
+                          {itemTicker}
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -780,7 +792,7 @@ export default function App() {
               <div>
                 <label className="block text-[10px] text-slate-400 mb-1 font-semibold">Direção</label>
                 <div className="grid grid-cols-2 gap-2">
-                  <button type="button" onClick={() => setTxTipo('COMPRA')} className={`py-2 text-xs font-bold rounded-xl border ${txTipo === 'COMPRA' ? 'bg-emerald-950 text-emerald-400 border-emerald-500' : 'bg-slate-950 text-slate-500 border-slate-800'}`}>COMPRA</button>
+                  <button type="button" onClick={() => setTxTipo('COMPRA')} className={`py-2 text-xs font-bold rounded-xl border ${txTipo === 'COMPRA' ? 'bg-emerald-950 text-emerald-400' : 'bg-slate-950 text-slate-500 border-slate-800'}`}>COMPRA</button>
                   <button type="button" onClick={() => setTxTipo('VENDA')} className={`py-2 text-xs font-bold rounded-xl border ${txTipo === 'VENDA' ? 'bg-red-950 text-red-400 border-red-500' : 'bg-slate-950 text-slate-500 border-slate-800'}`}>VENDA</button>
                 </div>
               </div>
