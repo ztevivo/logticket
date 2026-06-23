@@ -63,47 +63,62 @@ export default function App() {
   const carregarDados = async () => {
     setLoading(true);
     try {
+      // Fetch Tickets
       const resTickets = await fetch(`${SB_URL}/rest/v1/finance_tickets?order=ticker.asc`, { method: 'GET', headers: SB_HDR });
       const dataTickets = await resTickets.json();
       
+      // Fetch Logs
       const resLogs = await fetch(`${SB_URL}/rest/v1/finance_price_logs?order=registrado_em.asc`, { method: 'GET', headers: SB_HDR });
       const dataLogs = await resLogs.json();
 
+      // Fetch Transações
       const resTx = await fetch(`${SB_URL}/rest/v1/finance_transactions?order=registrado_em.desc`, { method: 'GET', headers: SB_HDR });
       const dataTx = await resTx.json();
 
       let mapeamentoSetores = {};
       let mapeamentoAtivos = {};
       
+      // Blocos de proteção individual para tabelas secundárias
       try {
         const resS = await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, { method: 'GET', headers: SB_HDR });
         if (resS.ok) {
           const arrS = await resS.json();
-          arrS.forEach(s => { mapeamentoSetores[s.nome] = parseFloat(s.meta_percentual); });
+          if (Array.isArray(arrS)) {
+            arrS.forEach(s => { 
+              if (s && s.nome) mapeamentoSetores[s.nome] = parseFloat(s.meta_percentual || 0); 
+            });
+          }
         }
-        
+      } catch (e) { console.error("Erro ao carregar setores:", e); }
+
+      try {
         const resA = await fetch(`${SB_URL}/rest/v1/finance_target_assets`, { method: 'GET', headers: SB_HDR });
         if (resA.ok) {
           const arrA = await resA.json();
-          arrA.forEach(a => { 
-            mapeamentoAtivos[a.ticker.toUpperCase()] = { 
-              setor: a.setor_nome, 
-              metaGrupo: parseFloat(a.meta_group_percentual || a.meta_grupo_percentual || 0) 
-            }; 
-          });
+          if (Array.isArray(arrA)) {
+            arrA.forEach(a => { 
+              if (a && a.ticker) {
+                mapeamentoAtivos[a.ticker.toUpperCase()] = { 
+                  setor: a.setor_nome || 'Sem Setor', 
+                  metaGrupo: parseFloat(a.meta_group_percentual || a.meta_grupo_percentual || 0) 
+                };
+              }
+            });
+          }
         }
-      } catch (e) {
-        console.warn("Tabelas de metas pendentes.");
-      }
+      } catch (e) { console.error("Erro ao carregar metas de ativos:", e); }
 
-      setTickets(dataTickets || []);
-      setLogsHistoricos(dataLogs || []);
-      setTransacoes(dataTx || []);
+      // Garante que só salvamos nos estados se o retorno for uma Array legítima
+      setTickets(Array.isArray(dataTickets) ? dataTickets : []);
+      setLogsHistoricos(Array.isArray(dataLogs) ? dataLogs : []);
+      setTransacoes(Array.isArray(dataTx) ? dataTx : []);
+      
       setSetoresMeta(mapeamentoSetores);
       setAtivosMeta(mapeamentoAtivos);
       setLastCheckTime(new Date().toLocaleTimeString('pt-BR'));
     } catch (err) {
-      showToast("Erro de sincronização: " + err.message, 'error');
+      console.error(err);
+      showToast("Erro na sincronização: " + err.message, 'error');
     } finally {
       setLoading(false);
     }
@@ -125,7 +140,7 @@ export default function App() {
         const res = await fetch(`https://brapi.dev/api/available?search=${query}&token=${BRAPI_TOKEN}`);
         if (res.ok) {
           const dados = await res.json();
-          if (dados.stocks) setSugestoes(dados.stocks.slice(0, 5));
+          if (dados && dados.stocks) setSugestoes(dados.stocks.slice(0, 5));
         }
       } catch (error) { console.error(error); }
       finally { setLoadingSugestoes(false); }
@@ -142,7 +157,7 @@ export default function App() {
       const res = await fetch(`https://brapi.dev/api/quote/${limpo}?token=${BRAPI_TOKEN}`);
       if (res.ok) {
         const data = await res.json();
-        if (data.results && data.results[0]) {
+        if (data && data.results && data.results[0]) {
           const ativoObjeto = data.results[0];
           const nomeCompleto = ativoObjeto.longName || ativoObjeto.shortName || 'Empresa Cadastrada';
           const setorExtraido = ativoObjeto.industry || 'Outros / Não Classificado';
@@ -156,7 +171,7 @@ export default function App() {
   };
 
   const ejecutarCronVerificacao = async () => {
-    if (tickets.length === 0) return;
+    if (!Array.isArray(tickets) || tickets.length === 0) return;
     setIsCronRunning(true);
     try {
       const listaTickers = tickets.map(t => t.ticker.toUpperCase().trim()).join(',');
@@ -166,9 +181,9 @@ export default function App() {
       const resMercado = await fetch(`https://brapi.dev/api/quote/${listaTickers}?token=${BRAPI_TOKEN}`);
       if (resMercado.ok) {
         const dadosMercado = await resMercado.json();
-        if (dadosMercado.results) {
+        if (dadosMercado && dadosMercado.results) {
           dadosMercado.results.forEach(ativo => {
-            if (ativo.symbol && ativo.regularMarketPrice !== undefined) {
+            if (ativo && ativo.symbol && ativo.regularMarketPrice !== undefined) {
               precosMercado[ativo.symbol.toUpperCase().trim()] = parseFloat(ativo.regularMarketPrice);
             }
           });
@@ -194,17 +209,18 @@ export default function App() {
   };
 
   const sincronizarPosicaoAtivo = async (tickerParam, todasTransacoes) => {
+    if (!Array.isArray(todasTransacoes)) return;
     const tickerUpper = tickerParam.toUpperCase();
-    const txsDoAtivo = todasTransacoes.filter(tx => tx.ticker.toUpperCase() === tickerUpper);
-    const ativoFisico = tickets.find(t => t.ticker.toUpperCase() === tickerUpper);
+    const txsDoAtivo = todasTransacoes.filter(tx => tx && tx.ticker && tx.ticker.toUpperCase() === tickerUpper);
+    const ativoFisico = tickets.find(t => t && t.ticker && t.ticker.toUpperCase() === tickerUpper);
     if (!ativoFisico) return;
 
     let totalQtd = 0;
     let totalCustoGlobal = 0;
 
     [...txsDoAtivo].sort((a, b) => new Date(a.registrado_em) - new Date(b.registrado_em)).forEach(tx => {
-      const q = parseInt(tx.quantidade);
-      const p = parseFloat(tx.preco);
+      const q = parseInt(tx.quantidade || 0);
+      const p = parseFloat(tx.preco || 0);
       if (tx.tipo === 'COMPRA') {
         totalQtd += q;
         totalCustoGlobal += (q * p);
@@ -226,6 +242,7 @@ export default function App() {
   const abrirModalTransacao = (idOrdem = '', tickerPredefinido = '') => {
     if (idOrdem) {
       const txExistente = transacoes.find(t => t.id === idOrdem);
+      if (!txExistente) return;
       setTxId(txExistente.id);
       setTxTicker(txExistente.ticker.toUpperCase());
       setTxTipo(txExistente.tipo);
@@ -390,19 +407,21 @@ export default function App() {
     }
   };
 
-  const totalPatrimonioReal = tickets.reduce((acc, t) => {
-    const logs = logsHistoricos.filter(l => l.ticker.toUpperCase() === t.ticker.toUpperCase());
+  // Cálculos Computados Defensivos (Garantem que loops de arrays vazias não quebram)
+  const totalPatrimonioReal = Array.isArray(tickets) ? tickets.reduce((acc, t) => {
+    if (!t) return acc;
+    const logs = Array.isArray(logsHistoricos) ? logsHistoricos.filter(l => l && l.ticker && l.ticker.toUpperCase() === t.ticker.toUpperCase()) : [];
     const precoMercado = logs[logs.length - 1] ? parseFloat(logs[logs.length - 1].preco) : parseFloat(t.preco_custo || 0);
     return acc + (parseInt(t.quantidade || 0) * precoMercado);
-  }, 0);
+  }, 0) : 0;
 
   const prepararPizzaReal = () => {
-    const ativosComSaldo = tickets.filter(t => parseInt(t.quantidade || 0) > 0);
+    const ativosComSaldo = Array.isArray(tickets) ? tickets.filter(t => t && parseInt(t.quantidade || 0) > 0) : [];
     return {
       labels: ativosComSaldo.map(t => t.ticker.toUpperCase()),
       datasets: [{
         data: ativosComSaldo.map(t => {
-          const logs = logsHistoricos.filter(l => l.ticker.toUpperCase() === t.ticker.toUpperCase());
+          const logs = Array.isArray(logsHistoricos) ? logsHistoricos.filter(l => l && l.ticker && l.ticker.toUpperCase() === t.ticker.toUpperCase()) : [];
           return parseInt(t.quantidade) * (logs[logs.length - 1] ? parseFloat(logs[logs.length - 1].preco) : parseFloat(t.preco_custo || 0));
         }),
         backgroundColor: ['#3b82f6', '#10b981', '#ef4444', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6'],
@@ -431,10 +450,11 @@ export default function App() {
     }
   });
 
-  const logsFinaisExibição = logsHistoricos.filter(log => {
+  const logsFinaisExibição = Array.isArray(logsHistoricos) ? logsHistoricos.filter(log => {
+    if (!log || !log.registrado_em) return false;
     const d = log.registrado_em.split('T')[0];
     return d >= dataInicio && d <= dataFim && (ativosSelecionados.length === 0 || ativosSelecionados.includes(log.ticker.toUpperCase()));
-  });
+  }) : [];
 
   const prepararDadosGraficoLinha = () => {
     const todosOsHorarios = [...new Set(logsFinaisExibição.map(l => {
@@ -442,15 +462,15 @@ export default function App() {
       return `${d.toLocaleDateString('pt-BR')} ${d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`;
     }))];
     
-    const tickersParaPlotar = ativosSelecionados.length > 0 ? ativosSelecionados : [...new Set(logsHistoricos.map(l => l.ticker.toUpperCase()))];
+    const tickersParaPlotar = ativosSelecionados.length > 0 ? ativosSelecionados : [...new Set(logsHistoricos.map(l => l && l.ticker ? l.ticker.toUpperCase() : ''))].filter(Boolean);
     
     return {
       labels: todosOsHorarios,
       datasets: tickersParaPlotar.map((ticker, idx) => {
-        const logsDoAtivo = logsFinaisExibição.filter(l => l.ticker.toUpperCase() === ticker);
+        const logsDoAtivo = logsFinaisExibição.filter(l => l && l.ticker && l.ticker.toUpperCase() === ticker);
         return {
           label: ticker,
-          data: logsDoAtivo.map(l => parseFloat(l.preco)),
+          data: logsDoAtivo.map(l => parseFloat(l.preco || 0)),
           borderColor: ['#3b82f6', '#10b981', '#ef4444', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6'][idx % 7],
           borderWidth: 2, fill: false, tension: 0.1
         };
@@ -480,11 +500,12 @@ export default function App() {
         <div className="flex gap-3 w-full md:w-auto self-end md:self-auto">
           <button onClick={() => abrirModalTransacao()} className="flex-1 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-xs font-bold rounded-xl shadow-lg">💸 Registrar Ordem</button>
           <button onClick={() => { setModalId(''); setModalTicker(''); setModalNome(''); setModalSetorAuto(''); setIsModalOpen(true); }} className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-xs font-bold rounded-xl shadow-lg">➕ Novo Ticker</button>
-          <button onClick={executarCronVerificacao} disabled={isCronRunning} className="px-4 py-2 bg-slate-900 border border-slate-800 text-xs font-bold text-slate-300 rounded-xl">↻ Preços</button>
+          <button onClick={ejecutarCronVerificacao} disabled={isCronRunning} className="px-4 py-2 bg-slate-900 border border-slate-800 text-xs font-bold text-slate-300 rounded-xl">↻ Preços</button>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto space-y-6">
+        {loading && <div className="text-xs text-blue-400 font-mono animate-pulse">Sincronizando base de dados em tempo real...</div>}
         
         {abaAtiva === 'home' && (
           <>
@@ -493,7 +514,7 @@ export default function App() {
                 {Object.keys(setoresMeta).length > 0 ? <Doughnut data={prepararPizzaMeta()} options={opcoesPizzaPercentual('Alocação Objetiva / Meta (%)')} /> : <div className="text-xs text-slate-600 text-center pt-24">Configure as metas na aba superior.</div>}
               </div>
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 h-60">
-                {tickets.some(t => parseInt(t.quantidade || 0) > 0) ? <Doughnut data={prepararPizzaReal()} options={opcoesPizzaPercentual('Alocação Líquida Real (%)')} /> : <div className="text-xs text-slate-600 text-center pt-24">Lance compras no extrato para computar o real.</div>}
+                {tickets && tickets.some(t => t && parseInt(t.quantidade || 0) > 0) ? <Doughnut data={prepararPizzaReal()} options={opcoesPizzaPercentual('Alocação Líquida Real (%)')} /> : <div className="text-xs text-slate-600 text-center pt-24">Lance compras no extrato para computar o real.</div>}
               </div>
             </div>
 
@@ -501,7 +522,8 @@ export default function App() {
               <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">Ativos & Desempenho Operacional</h2>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {tickets.map(t => {
-                  const logs = logsHistoricos.filter(l => l.ticker.toUpperCase() === t.ticker.toUpperCase());
+                  if (!t) return null;
+                  const logs = Array.isArray(logsHistoricos) ? logsHistoricos.filter(l => l && l.ticker && l.ticker.toUpperCase() === t.ticker.toUpperCase()) : [];
                   const precoMercado = logs[logs.length - 1] ? parseFloat(logs[logs.length - 1].preco) : 0;
                   const qtdVal = parseInt(t.quantidade || 0);
                   const patrReal = qtdVal * precoMercado;
@@ -566,6 +588,7 @@ export default function App() {
               <div className="flex flex-wrap gap-2 p-3 bg-slate-950 rounded-xl border border-slate-800/60">
                 <span className="text-[11px] font-bold text-slate-400 uppercase flex items-center mr-2">Comparar ativos:</span>
                 {tickets.map(t => {
+                  if (!t) return null;
                   const ativoChave = t.ticker.toUpperCase();
                   const estaSelecionado = ativosSelecionados.includes(ativoChave);
                   return (
@@ -611,23 +634,26 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/40">
-                    {transacoes.map(tx => (
-                      <tr key={tx.id} className="hover:bg-slate-800/10">
-                        <td className="p-3 font-mono text-slate-400">{new Date(tx.registrado_em).toLocaleDateString('pt-BR')}</td>
-                        <td className="p-3 font-bold text-blue-400">{tx.ticker?.toUpperCase()}</td>
-                        <td className="p-3">
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${tx.tipo === 'COMPRA' ? 'bg-emerald-950 text-emerald-400' : 'bg-red-950 text-red-400'}`}>
-                            {tx.tipo}
-                          </span>
-                        </td>
-                        <td className="p-3 font-mono">{tx.quantidade} un</td>
-                        <td className="p-3 font-mono">R$ {parseFloat(tx.preco || 0).toFixed(2)}</td>
-                        <td className="p-3 text-center flex items-center justify-center gap-4">
-                          <button onClick={() => abrirModalTransacao(tx.id)} className="text-slate-400 hover:text-blue-400 font-medium transition-colors">✏️ Ajustar</button>
-                          <button onClick={() => excluirTransacao(tx.id, tx.ticker)} className="text-slate-500 hover:text-red-400 transition-colors">✕ Deletar</button>
-                        </td>
-                      </tr>
-                    ))}
+                    {transacoes.map(tx => {
+                      if (!tx) return null;
+                      return (
+                        <tr key={tx.id} className="hover:bg-slate-800/10">
+                          <td className="p-3 font-mono text-slate-400">{tx.registrado_em ? new Date(tx.registrado_em).toLocaleDateString('pt-BR') : '---'}</td>
+                          <td className="p-3 font-bold text-blue-400">{tx.ticker?.toUpperCase()}</td>
+                          <td className="p-3">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${tx.tipo === 'COMPRA' ? 'bg-emerald-950 text-emerald-400' : 'bg-red-950 text-red-400'}`}>
+                              {tx.tipo}
+                            </span>
+                          </td>
+                          <td className="p-3 font-mono">{tx.quantidade} un</td>
+                          <td className="p-3 font-mono">R$ {parseFloat(tx.preco || 0).toFixed(2)}</td>
+                          <td className="p-3 text-center flex items-center justify-center gap-4">
+                            <button onClick={() => abrirModalTransacao(tx.id)} className="text-slate-400 hover:text-blue-400 font-medium transition-colors">✏️ Ajustar</button>
+                            <button onClick={() => excluirTransacao(tx.id, tx.ticker)} className="text-slate-500 hover:text-red-400 transition-colors">✕ Deletar</button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -676,6 +702,7 @@ export default function App() {
 
                 <div className="max-h-80 overflow-y-auto space-y-2 pr-1">
                   {tickets.map(t => {
+                    if (!t) return null;
                     const mAtivo = ativosMeta[t.ticker.toUpperCase()] || { setor: '', metaGrupo: 100 };
                     return (
                       <div key={t.id} className="grid grid-cols-3 gap-2 bg-slate-900 p-2 rounded-lg border border-slate-800 items-center text-xs">
@@ -746,7 +773,7 @@ export default function App() {
                 <div>
                   <label className="block text-[10px] text-slate-400 mb-1 font-semibold">Ativo</label>
                   <select disabled={!!txId} value={txTicker} onChange={e => setTxTicker(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs disabled:opacity-50 text-white font-bold">
-                    {tickets.map(t => <option key={t.id} value={t.ticker.toUpperCase()}>{t.ticker.toUpperCase()}</option>)}
+                    {tickets.map(t => t && <option key={t.id} value={t.ticker.toUpperCase()}>{t.ticker.toUpperCase()}</option>)}
                   </select>
                 </div>
               </div>
@@ -775,7 +802,6 @@ export default function App() {
           </div>
         </div>
       )}
-
     </div>
   );
 }
