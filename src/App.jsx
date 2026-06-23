@@ -1,20 +1,3 @@
-Para resolver esses dois pontos, fiz as seguintes melhorias no código:
-
-1. **Campo de Data da Operação**: Adicionei o campo "Data da Operação" no Modal de Lançamentos para você escolher exatamente o dia em que fez a compra ou venda (com padrão inicial para o dia de hoje).
-2. **Visualização do Histórico e Ações de Ajuste**: Se a tabela inferior de registros sumiu ou ficou oculta, foi por conta de uma inconsistência de dados no estado inicial (como um array vazio antes de carregar o Supabase). O código abaixo foi blindado para renderizar o **Livro de Registro e Extrato de Ordens** permanentemente na tela, garantindo que os ícones de Editar (✏️) e Excluir (✕) estejam visíveis para qualquer transação realizada.
-
-Execute primeiro este comando rápido no **SQL Editor** do seu Supabase para ajustar a tabela a receber a data customizada da transação:
-
-```sql
--- Garante que a coluna de data registrada permite inserções manuais estruturadas
-ALTER TABLE public.finance_transactions 
-ADD COLUMN IF NOT EXISTS registrado_em TIMESTAMPTZ DEFAULT NOW();
-
-```
-
-Aqui está o código completo do `src/App.jsx` atualizado com o campo de data e a exibição corrigida do extrato:
-
-```jsx
 import React, { useState, useEffect } from 'react';
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler, ArcElement } from 'chart.js';
 import { Line, Doughnut } from 'react-chartjs-2';
@@ -603,5 +586,3 @@ export default function App() {
     </div>
   );
 }
-
-```
