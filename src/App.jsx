@@ -143,6 +143,32 @@ export default function App() {
     return () => clearTimeout(delayDebounceFn);
   }, [modalTicker, modalId]);
 
+  // Fallback 1: o endpoint /api/quote/list devolve o campo "sector" direto em cada
+  // item de "stocks", sem precisar do parâmetro modules. Usado quando o /quote/{ticker}
+  // não trouxe nada em summaryProfile (comum para alguns BDRs/ativos recém listados).
+  const buscarSetorFallbackViaLista = async (tickerLimpo) => {
+    try {
+      const res = await fetch(`https://brapi.dev/api/quote/list?search=${tickerLimpo}&token=${BRAPI_TOKEN}`);
+      if (res.ok) {
+        const dados = await res.json();
+        if (dados && Array.isArray(dados.stocks)) {
+          const match = dados.stocks.find(s => s && s.stock && s.stock.toUpperCase() === tickerLimpo.toUpperCase());
+          if (match && match.sector) return match.sector;
+        }
+      }
+    } catch (e) { console.error('Fallback de setor via /quote/list falhou:', e); }
+    return '';
+  };
+
+  // Fallback 2 (último recurso): heurística simples baseada no padrão do ticker.
+  // Terminação "11" geralmente indica FII/Unit; nos demais casos não há como
+  // inferir o setor de forma confiável só pelo código, então mantemos um rótulo limpo.
+  const inferirSetorPorSufixo = (tickerLimpo) => {
+    const t = tickerLimpo.toUpperCase().trim();
+    if (t.endsWith('11')) return 'Fundos Imobiliários / Units';
+    return 'Outros / Não Classificado';
+  };
+
   const selecionarSugestao = async (tickerSelecionado) => {
     let limpo = tickerSelecionado.toUpperCase().trim();
     const tickerComSufixo = limpo.endsWith('.SA') ? limpo : `${limpo}.SA`;
@@ -151,20 +177,52 @@ export default function App() {
     setSugestoes([]);
     setLoadingSugestoes(true);
     try {
-      const res = await fetch(`https://brapi.dev/api/quote/${tickerComSufixo}?token=${BRAPI_TOKEN}`);
+      // IMPORTANTE: precisa do parâmetro modules=summaryProfile, senão a Brapi não
+      // retorna sector/industry/segment em nenhum formato no endpoint de quote simples.
+      const res = await fetch(`https://brapi.dev/api/quote/${tickerComSufixo}?modules=summaryProfile&token=${BRAPI_TOKEN}`);
+      let nomeCompleto = '';
+      let setorExtraido = '';
+
       if (res.ok) {
         const data = await res.json();
         if (data && data.results && data.results[0]) {
           const ativoObjeto = data.results[0];
-          const nomeCompleto = ativoObjeto.longName || ativoObjeto.shortName || 'Empresa Cadastrada';
-          
-          const setorExtraido = ativoObjeto.industry || ativoObjeto.sector || ativoObjeto.segment || 'Outros / Não Classificado';
-          
-          setModalNome(nomeCompleto);
-          setModalSetorAuto(setorExtraido);
+          nomeCompleto = ativoObjeto.longName || ativoObjeto.shortName || 'Empresa Cadastrada';
+
+          // 1. Captura todas as variantes possíveis da Brapi: o setor pode vir
+          // aninhado no módulo summaryProfile (formato correto) ou, em respostas
+          // de outras versões/planos, direto na raiz do objeto.
+          setorExtraido =
+            ativoObjeto.summaryProfile?.sector ||
+            ativoObjeto.summaryProfile?.sectorDisp ||
+            ativoObjeto.summaryProfile?.industry ||
+            ativoObjeto.summaryProfile?.industryDisp ||
+            ativoObjeto.sector ||
+            ativoObjeto.industry ||
+            ativoObjeto.segment ||
+            '';
         }
+      } else {
+        console.error('Falha ao consultar /quote:', res.status);
       }
-    } catch (e) { console.error(e); }
+
+      // 2. Se a API não retornou nenhum setor, tenta o fallback via /quote/list
+      if (!setorExtraido) {
+        setorExtraido = await buscarSetorFallbackViaLista(limpo);
+      }
+
+      // 3. Se mesmo assim não vier nada, aplica a heurística baseada no ticker
+      if (!setorExtraido) {
+        setorExtraido = inferirSetorPorSufixo(limpo);
+      }
+
+      if (nomeCompleto) setModalNome(nomeCompleto);
+      setModalSetorAuto(setorExtraido);
+    } catch (e) {
+      console.error(e);
+      // Mesmo em erro de rede, garante que o campo não fique vazio
+      setModalSetorAuto(inferirSetorPorSufixo(limpo));
+    }
     finally { setLoadingSugestoes(false); }
   };
 
@@ -307,6 +365,25 @@ export default function App() {
     } catch (e) { showToast(e.message, 'error'); }
   };
 
+  // Correção crítica: persiste o setor (detectado automaticamente ou padrão) tanto
+  // em finance_target_sectors quanto em finance_target_assets. Antes isso só
+  // acontecia no fluxo de CRIAÇÃO de um ticker novo; ao editar um ticket existente
+  // (modalId preenchido) o setor escolhido no modal era descartado e nunca chegava
+  // na tabela finance_target_assets.
+  const persistirSetorAtivo = async (tkrChave, setorDefinido) => {
+    await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
+      method: 'POST',
+      headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+      body: JSON.stringify({ nome: setorDefinido, meta_percentual: 0 })
+    });
+
+    await fetch(`${SB_URL}/rest/v1/finance_target_assets`, {
+      method: 'POST',
+      headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+      body: JSON.stringify({ ticker: tkrChave, setor_nome: setorDefinido, meta_group_percentual: 100 })
+    });
+  };
+
   const salvarTicket = async (e) => {
     e.preventDefault();
     if (!modalTicker.trim() || !modalNome.trim()) return;
@@ -316,24 +393,14 @@ export default function App() {
     try {
       if (modalId) {
         await fetch(`${SB_URL}/rest/v1/finance_tickets?id=eq.${modalId}`, { method: 'PATCH', headers: SB_HDR, body: JSON.stringify({ nome: modalNome }) });
+        await persistirSetorAtivo(tkrChave, setorDefinido);
       } else {
         await fetch(`${SB_URL}/rest/v1/finance_tickets`, { 
           method: 'POST', 
           headers: SB_HDR, 
           body: JSON.stringify({ ticker: tkrChave, nome: modalNome, quantidade: 0, preco_custo: 0 }) 
         });
-
-        await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
-          method: 'POST',
-          headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
-          body: JSON.stringify({ nome: setorDefinido, meta_percentual: 0 })
-        });
-
-        await fetch(`${SB_URL}/rest/v1/finance_target_assets`, {
-          method: 'POST',
-          headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
-          body: JSON.stringify({ ticker: tkrChave, setor_nome: setorDefinido, meta_group_percentual: 100 })
-        });
+        await persistirSetorAtivo(tkrChave, setorDefinido);
       }
       setIsModalOpen(false);
       await carregarDados();
