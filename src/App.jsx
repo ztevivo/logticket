@@ -145,7 +145,9 @@ export default function App() {
         if (data.results && data.results[0]) {
           const ativoObjeto = data.results[0];
           const nomeCompleto = ativoObjeto.longName || ativoObjeto.shortName || 'Empresa Cadastrada';
-          const setorExtraido = ativoObjeto.industry || 'Outros / Não Classificado';
+          
+          // CORREÇÃO AQUI: Alterado de .industry para .sector que é retornado pela BRAPI
+          const setorExtraido = ativoObjeto.sector || 'Outros / Não Classificado';
           
           setModalNome(nomeCompleto);
           setModalSetorAuto(setorExtraido);
@@ -461,7 +463,6 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 p-4 md:p-8 font-sans antialiased">
       <style>{`
-        /* Estilos adicionais para controle global e scrollbars finas */
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: #020617; }
         ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 4px; }
@@ -679,7 +680,7 @@ export default function App() {
               <div className="space-y-4 bg-slate-950 p-4 rounded-xl border border-slate-800/80">
                 <div>
                   <h3 className="text-xs font-bold uppercase tracking-wider text-blue-400">2. Peso de Ativos no Grupo</h3>
-                  <p className="text-[11px] text-slate-500">Mude a categoria ou o peso de dispersão interna do ativo.</p>
+                  <p className="text-[11px] text-slate-500">Mude a categoria ou o peso de distribuição interna do ativo.</p>
                 </div>
 
                 <div className="max-h-80 overflow-y-auto space-y-2 pr-1">
