@@ -1,41 +1,3 @@
-Para salvar todo o histórico de compras e vendas e permitir que você **edite** ou **exclua** um lançamento errado, precisamos criar uma **nova tabela de transações** no seu Supabase e atualizar o código do seu `App.jsx`.
-
-Atualmente, o código atualiza o saldo direto no ativo, mas não lembra *como* chegou naquele valor. Com essa mudança, o sistema passará a recalcular a quantidade e o preço médio de forma automatizada e correta sempre que uma transação for criada, modificada ou excluída!
-
----
-
-### Passo 1: Criar a tabela de Transações no Supabase
-
-Abra o **SQL Editor** no seu Supabase, cole o código abaixo em uma nova aba e clique em **Run**:
-
-```sql
--- Criar a tabela de histórico de transações (compras e vendas)
-CREATE TABLE IF NOT EXISTS public.finance_transactions (
-    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    ticker TEXT NOT NULL,
-    tipo TEXT NOT NULL, -- 'COMPRA' ou 'VENDA'
-    quantidade INTEGER NOT NULL,
-    preco NUMERIC(10, 2) NOT NULL,
-    registrado_em TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Habilitar acesso público simplificado para leitura/escrita
-ALTER TABLE public.finance_transactions ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "Permitir tudo para todos" ON public.finance_transactions FOR ALL USING (true) WITH CHECK (true);
-
-```
-
----
-
-### Passo 2: Código Completo e Atualizado (`src/App.jsx`)
-
-Aqui está a versão completa do seu arquivo. Ela inclui:
-
-1. **Nova Seção de Extrato/Histórico de Ordens** no final da página.
-2. **Botões de Editar (✏️) e Excluir (✕)** para cada lançamento.
-3. **Recálculo Automático Ponderado:** Se você excluir ou editar uma compra antiga, o sistema recalcula perfeitamente a sua quantidade de cotas e preço médio atuais no card e no gráfico de pizza.
-
-```jsx
 import React, { useState, useEffect } from 'react';
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler, ArcElement } from 'chart.js';
 import { Line, Doughnut } from 'react-chartjs-2';
@@ -627,5 +589,3 @@ export default function App() {
     </div>
   );
 }
-
-```
