@@ -1,10 +1,3 @@
-Aqui está o código completo corrigido. O erro principal que fazia com que o formulário de transações "continuasse na mesma" sem salvar era a chamada de `onSubmit={salvarTransaction}` no formulário do modal de transações, enquanto a função foi declarada como `salvarTransacao`.
-
-Além disso, garanti que toda a estrutura esteja correta e limpa.
-
-### `App.jsx`
-
-```jsx
 import React, { useState, useEffect } from 'react';
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler, ArcElement } from 'chart.js';
 import { Line, Doughnut } from 'react-chartjs-2';
@@ -786,5 +779,3 @@ export default function App() {
     </div>
   );
 }
-
-```
