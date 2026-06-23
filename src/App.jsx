@@ -155,7 +155,7 @@ export default function App() {
     finally { setLoadingSugestoes(false); }
   };
 
-  const ejecutarCronVerificacao = async () => {
+  const executarCronVerificacao = async () => {
     if (tickets.length === 0) return;
     setIsCronRunning(true);
     try {
@@ -460,6 +460,15 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 p-4 md:p-8 font-sans antialiased">
+      <style>{`
+        /* Estilos adicionais para controle global e scrollbars finas */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #020617; }
+        ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #334155; }
+        .line-clamp-1 { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+      `}</style>
+
       {toast.show && (
         <div className="fixed top-5 right-5 z-50 flex items-center p-4 rounded-xl bg-slate-900 border border-emerald-800 text-emerald-200 text-xs shadow-2xl">
           <span>✨</span> <span className="ml-2">{toast.message}</span>
@@ -485,7 +494,6 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto space-y-6">
-        
         {abaAtiva === 'home' && (
           <>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-900/40 p-5 rounded-2xl border border-slate-800/60">
@@ -737,7 +745,7 @@ export default function App() {
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6">
             <h3 className="text-base font-bold text-white mb-3">{txId ? '✏️ Ajustar Ordem Existente' : '💸 Lançar Ordem de Mercado'}</h3>
-            <form onSubmit={salvarTransaction} className="space-y-4">
+            <form onSubmit={salvarTransacao} className="space-y-4">
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="block text-[10px] text-slate-400 mb-1 font-semibold">Data</label>
@@ -775,7 +783,6 @@ export default function App() {
           </div>
         </div>
       )}
-
     </div>
   );
 }
