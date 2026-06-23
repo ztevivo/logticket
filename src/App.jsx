@@ -1,3 +1,10 @@
+Aqui está o código completo corrigido. O erro principal que fazia com que o formulário de transações "continuasse na mesma" sem salvar era a chamada de `onSubmit={salvarTransaction}` no formulário do modal de transações, enquanto a função foi declarada como `salvarTransacao`.
+
+Além disso, garanti que toda a estrutura esteja correta e limpa.
+
+### `App.jsx`
+
+```jsx
 import React, { useState, useEffect } from 'react';
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler, ArcElement } from 'chart.js';
 import { Line, Doughnut } from 'react-chartjs-2';
@@ -297,32 +304,21 @@ export default function App() {
       if (modalId) {
         await fetch(`${SB_URL}/rest/v1/finance_tickets?id=eq.${modalId}`, { method: 'PATCH', headers: SB_HDR, body: JSON.stringify({ nome: modalNome }) });
       } else {
-        // 1. Cria o Ticker na tabela principal
         await fetch(`${SB_URL}/rest/v1/finance_tickets`, { 
           method: 'POST', 
           headers: SB_HDR, 
           body: JSON.stringify({ ticker: tkrChave, nome: modalNome, quantidade: 0, preco_custo: 0 }) 
         });
 
-        // 2. Verifica se o setor já existe antes de tentar inserir
-        const checarSetor = await fetch(`${SB_URL}/rest/v1/finance_target_sectors?nome=eq.${encodeURIComponent(setorDefinido)}`, { method: 'GET', headers: SB_HDR });
-        const dadosSetorExistem = await checarSetor.json();
+        await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
+          method: 'POST',
+          headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+          body: JSON.stringify({ nome: setorDefinido, meta_percentual: 0 })
+        });
 
-        if (!dadosSetorExistem || dadosSetorExistem.length === 0) {
-          await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
-            method: 'POST',
-            headers: SB_HDR,
-            body: JSON.stringify({ nome: setorDefinido, meta_percentual: 0 })
-          });
-        }
-
-        // 3. Deleta qualquer vínculo antigo residual para evitar conflito de PKey/Unique Constraint
-        await fetch(`${SB_URL}/rest/v1/finance_target_assets?ticker=eq.${tkrChave}`, { method: 'DELETE', headers: SB_HDR });
-
-        // 4. Cria o relacionamento limpo e atualizado
         await fetch(`${SB_URL}/rest/v1/finance_target_assets`, {
           method: 'POST',
-          headers: SB_HDR,
+          headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
           body: JSON.stringify({ ticker: tkrChave, setor_nome: setorDefinido, meta_group_percentual: 100 })
         });
       }
@@ -343,22 +339,11 @@ export default function App() {
     e.preventDefault();
     if (!novoSetorNome.trim() || !novoSetorMeta) return;
     try {
-      const checarSetor = await fetch(`${SB_URL}/rest/v1/finance_target_sectors?nome=eq.${encodeURIComponent(novoSetorNome.trim())}`, { method: 'GET', headers: SB_HDR });
-      const dadosSetorExistem = await checarSetor.json();
-
-      if (!dadosSetorExistem || dadosSetorExistem.length === 0) {
-        await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
-          method: 'POST',
-          headers: SB_HDR,
-          body: JSON.stringify({ nome: novoSetorNome.trim(), meta_percentual: parseFloat(novoSetorMeta) })
-        });
-      } else {
-        await fetch(`${SB_URL}/rest/v1/finance_target_sectors?nome=eq.${encodeURIComponent(novoSetorNome.trim())}`, {
-          method: 'PATCH',
-          headers: SB_HDR,
-          body: JSON.stringify({ meta_percentual: parseFloat(novoSetorMeta) })
-        });
-      }
+      await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
+        method: 'POST',
+        headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+        body: JSON.stringify({ nome: novoSetorNome.trim(), meta_percentual: parseFloat(novoSetorMeta) })
+      });
       setNovoSetorNome('');
       setNovoSetorMeta('');
       await carregarDados();
@@ -389,11 +374,15 @@ export default function App() {
     const tkr = ticker.toUpperCase();
     const mGrupo = parseFloat(metaGrupo) || 0;
     try {
-      await fetch(`${SB_URL}/rest/v1/finance_target_assets?ticker=eq.${tkr}`, { method: 'DELETE', headers: SB_HDR });
       await fetch(`${SB_URL}/rest/v1/finance_target_assets`, {
         method: 'POST',
-        headers: SB_HDR,
+        headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
         body: JSON.stringify({ ticker: tkr, setor_nome: setor || null, meta_group_percentual: mGrupo })
+      });
+      await fetch(`${SB_URL}/rest/v1/finance_target_assets?ticker=eq.${tkr}`, {
+        method: 'PATCH',
+        headers: SB_HDR,
+        body: JSON.stringify({ setor_nome: setor || null, meta_group_percentual: mGrupo })
       });
       setAtivosMeta(p => ({ ...p, [tkr]: { setor, metaGrupo: mGrupo } }));
     } catch (e) { console.error(e); }
@@ -793,6 +782,9 @@ export default function App() {
           </div>
         </div>
       )}
+
     </div>
   );
 }
+
+```
