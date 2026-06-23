@@ -4,7 +4,6 @@ import { Line, Doughnut } from 'react-chartjs-2';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler, ArcElement);
 
-// ── CONFIGURAÇÕES DOS BANCOS E APIS ─────────────────────────────────────────
 const SB_URL = 'https://gghwqnqxquhrxchimerw.supabase.co';
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdnaHdxbnF4cXVocnhjaGltZXJ3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIxMzMxMjgsImV4cCI6MjA5NzcwOTEyOH0.mWAotOVvwVDL9gGnhbjn6asL7lWnrKpwc390nTf6RAc';
 const BRAPI_TOKEN = 'ws5Toz7mQL85uqbuWcXTDo';
@@ -18,10 +17,8 @@ const SB_HDR = {
 };
 
 export default function App() {
-  // Controle de Aba Ativa (Home / Configurações Separadas)
   const [abaAtiva, setAbaAtiva] = useState('home');
 
-  // ── ESTADOS DA APLICAÇÃO ──────────────────────────────────────────────────
   const [tickets, setTickets] = useState([]);
   const [logsHistoricos, setLogsHistoricos] = useState([]);
   const [transacoes, setTransacoes] = useState([]); 
@@ -29,12 +26,11 @@ export default function App() {
   const [isCronRunning, setIsCronRunning] = useState(false);
   const [lastCheckTime, setLastCheckTime] = useState('Nunca verificado');
   
-  // Modais
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalId, setModalId] = useState('');
   const [modalTicker, setModalTicker] = useState('');
   const [modalNome, setModalNome] = useState('');
-  const [modalSetorAuto, setModalSetorAuto] = useState(''); // Armazena o setor detectado
+  const [modalSetorAuto, setModalSetorAuto] = useState(''); 
   
   const [isTxModalOpen, setIsTxModalOpen] = useState(false);
   const [txId, setTxId] = useState(''); 
@@ -44,20 +40,16 @@ export default function App() {
   const [txPreco, setTxPreco] = useState('');
   const [txData, setTxData] = useState(new Date().toISOString().split('T')[0]);
 
-  // Sugestões Brapi
   const [sugestoes, setSugestoes] = useState([]);
   const [loadingSugestoes, setLoadingSugestoes] = useState(false);
   
-  // Filtros do Gráfico de Histórico
   const hojeStr = new Date().toISOString().split('T')[0];
   const [dataInicio, setDataInicio] = useState(hojeStr);
   const [dataFim, setDataFim] = useState(hojeStr);
   const [ativosSelecionados, setAtivosSelecionados] = useState([]); 
   
-  // Notificações
   const [toast, setToast] = useState({ show: false, message: '', type: 'info' });
 
-  // ── ESTADOS DA CARTEIRA META ──────────────────────────────────────────────
   const [setoresMeta, setSetoresMeta] = useState({});
   const [ativosMeta, setAtivosMeta] = useState({});
   const [novoSetorNome, setNovoSetorNome] = useState('');
@@ -68,7 +60,6 @@ export default function App() {
     setTimeout(() => setToast({ show: false, message: '', type: 'info' }), 4000);
   };
 
-  // ── LEITURA COMPLETA DOS DADOS ────────────────────────────────────────────
   const carregarDados = async () => {
     setLoading(true);
     try {
@@ -102,7 +93,7 @@ export default function App() {
           });
         }
       } catch (e) {
-        console.warn("Tabelas de metas pendentes de carregamento.");
+        console.warn("Tabelas de metas pendentes.");
       }
 
       setTickets(dataTickets || []);
@@ -122,7 +113,6 @@ export default function App() {
     carregarDados();
   }, []);
 
-  // Auto-sugestão Brapi
   useEffect(() => {
     if (modalId || !modalTicker.trim() || modalTicker.trim().length < 2) {
       setSugestoes([]);
@@ -143,7 +133,6 @@ export default function App() {
     return () => clearTimeout(delayDebounceFn);
   }, [modalTicker, modalId]);
 
-  // BUSCA AUTOMÁTICA DE EMPRESA E SETOR (INDUSTRY) NA BRAPI
   const selecionarSugestao = async (tickerSelecionado) => {
     const limpo = tickerSelecionado.toUpperCase().trim();
     setModalTicker(limpo);
@@ -166,7 +155,6 @@ export default function App() {
     finally { setLoadingSugestoes(false); }
   };
 
-  // Varredura de Preços Cron
   const ejecutarCronVerificacao = async () => {
     if (tickets.length === 0) return;
     setIsCronRunning(true);
@@ -299,7 +287,6 @@ export default function App() {
     } catch (e) { showToast(e.message, 'error'); }
   };
 
-  // CADASTRO DO TICKET COM INSERÇÃO AUTOMÁTICA DO SETOR E ALOCAÇÃO META DEFAULT
   const salvarTicket = async (e) => {
     e.preventDefault();
     if (!modalTicker.trim() || !modalNome.trim()) return;
@@ -310,21 +297,18 @@ export default function App() {
       if (modalId) {
         await fetch(`${SB_URL}/rest/v1/finance_tickets?id=eq.${modalId}`, { method: 'PATCH', headers: SB_HDR, body: JSON.stringify({ nome: modalNome }) });
       } else {
-        // 1. Cadastra o painel básico de monitoramento
         await fetch(`${SB_URL}/rest/v1/finance_tickets`, { 
           method: 'POST', 
           headers: SB_HDR, 
           body: JSON.stringify({ ticker: tkrChave, nome: modalNome, quantidade: 0, preco_custo: 0 }) 
         });
 
-        // 2. Garante a existência do Setor na tabela de metas
         await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
           method: 'POST',
           headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
           body: JSON.stringify({ nome: setorDefinido, meta_percentual: 0 })
         });
 
-        // 3. Cadastra automaticamente a relação de classificação sem intervenção do usuário
         await fetch(`${SB_URL}/rest/v1/finance_target_assets`, {
           method: 'POST',
           headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
@@ -333,7 +317,7 @@ export default function App() {
       }
       setIsModalOpen(false);
       await carregarDados();
-      showToast(`Ticker ${tkrChave} autoclassificado em: ${setorDefinido}`);
+      showToast(`Ticker ${tkrChave} cadastrado.`);
     } catch (err) { showToast(err.message, 'error'); }
   };
 
@@ -344,7 +328,6 @@ export default function App() {
     await carregarDados();
   };
 
-  // Métodos da Página Separada de Configurações
   const adicionarSetor = async (e) => {
     e.preventDefault();
     if (!novoSetorNome.trim() || !novoSetorMeta) return;
@@ -357,7 +340,7 @@ export default function App() {
       setNovoSetorNome('');
       setNovoSetorMeta('');
       await carregarDados();
-      showToast('Setor integrado à meta!');
+      showToast('Setor integrado!');
     } catch (err) { console.error(err); }
   };
 
@@ -413,7 +396,6 @@ export default function App() {
     return acc + (parseInt(t.quantidade || 0) * precoMercado);
   }, 0);
 
-  // ── PREPARAÇÃO DE GRÁFICOS ────────────────────────────────────────────────
   const prepararPizzaReal = () => {
     const ativosComSaldo = tickets.filter(t => parseInt(t.quantidade || 0) > 0);
     return {
@@ -484,13 +466,11 @@ export default function App() {
         </div>
       )}
 
-      {/* HEADER PRINCIPAL COM SELETOR DE ABAS */}
       <header className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8 border-b border-slate-900 pb-5">
         <div>
           <h1 className="text-2xl font-black bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">QuantumFinance Hub</h1>
           <p className="text-xs text-slate-400 mt-0.5">Gestão Automatizada de Portfólio Auditável</p>
           
-          {/* SELETOR DE PÁGINAS SEPARADAS */}
           <div className="flex gap-2 mt-4 bg-slate-900/60 p-1 rounded-xl border border-slate-800 w-fit">
             <button onClick={() => setAbaAtiva('home')} className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${abaAtiva === 'home' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}>📊 Painel Geral</button>
             <button onClick={() => setAbaAtiva('metas')} className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${abaAtiva === 'metas' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}>⚙️ Configurar Metas & Setores</button>
@@ -506,10 +486,8 @@ export default function App() {
 
       <main className="max-w-7xl mx-auto space-y-6">
         
-        {/* VIEW 1: HOME (PAINEL GERAL) */}
         {abaAtiva === 'home' && (
           <>
-            {/* GRÁFICOS PIZZA PERCENTUAIS */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-900/40 p-5 rounded-2xl border border-slate-800/60">
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 h-60">
                 {Object.keys(setoresMeta).length > 0 ? <Doughnut data={prepararPizzaMeta()} options={opcoesPizzaPercentual('Alocação Objetiva / Meta (%)')} /> : <div className="text-xs text-slate-600 text-center pt-24">Configure as metas na aba superior.</div>}
@@ -519,7 +497,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* LISTAGEM DE TICKETS DA HOME (LIMPO E DO JEITO QUE VOCÊ QUERIA) */}
             <div className="space-y-4">
               <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">Ativos & Desempenho Operacional</h2>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -574,7 +551,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* FILTRAGEM TEMPORAL E COMPARADOR DE ATIVOS */}
             <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
               <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4">
                 <div>
@@ -614,11 +590,10 @@ export default function App() {
               </div>
 
               <div className="h-60 w-full">
-                {logsFinaisExibição.length > 0 ? <Line data={prepararDadosGraficoLinha()} options={{ responsive: true, maintainAspectRatio: false }} /> : <div className="text-xs text-slate-600 text-center pt-24">Sem correspondências de cotação para o período ou ativos selecionados.</div>}
+                {logsFinaisExibição.length > 0 ? <Line data={prepararDadosGraficoLinha()} options={{ responsive: true, maintainAspectRatio: false }} /> : <div className="text-xs text-slate-600 text-center pt-24">Sem cotações registradas no período ou ativos selecionados.</div>}
               </div>
             </section>
 
-            {/* TABELA DE OPERAÇÕES FINANCEIRAS */}
             <section className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
               <div className="p-4 bg-slate-900/50 border-b border-slate-800">
                 <h3 className="text-sm font-bold text-slate-200">📋 Livro de Ordens e Movimentações Financeiras</h3>
@@ -660,17 +635,14 @@ export default function App() {
           </>
         )}
 
-        {/* VIEW 2: PAGINA ISOLADA DE CONFIGURAÇÃO DE PERCENTUAL DE GRUPO/CATEGORIA */}
         {abaAtiva === 'metas' && (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6">
             <div>
               <h2 className="text-base font-black text-white">⚙️ Painel de Metas & Peso da Carteira</h2>
-              <p className="text-xs text-slate-400 mt-1">Defina a distribuição e o peso ideal de cada setor/ativo. Essas configurações impactarão os gráficos de metas.</p>
+              <p className="text-xs text-slate-400 mt-1">Defina a distribuição e o peso ideal de cada setor/ativo.</p>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
-              
-              {/* Ajuste de Setores Globais */}
               <div className="space-y-4 bg-slate-950 p-4 rounded-xl border border-slate-800/80">
                 <div>
                   <h3 className="text-xs font-bold uppercase tracking-wider text-purple-400">1. Alocação por Setor</h3>
@@ -696,7 +668,6 @@ export default function App() {
                 </form>
               </div>
 
-              {/* Ajuste Fino dos Pesos Individuais de Tickers */}
               <div className="space-y-4 bg-slate-950 p-4 rounded-xl border border-slate-800/80">
                 <div>
                   <h3 className="text-xs font-bold uppercase tracking-wider text-blue-400">2. Peso de Ativos no Grupo</h3>
@@ -719,18 +690,16 @@ export default function App() {
                   })}
                 </div>
               </div>
-
             </div>
           </div>
         )}
       </main>
 
-      {/* MODAL ADICIONAR TICKET COM AUTOSETOR DE INDÚSTRIA DA BRAPI */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6">
             <h3 className="text-base font-bold text-white mb-1">➕ Cadastrar Novo Ticker</h3>
-            <p className="text-[11px] text-slate-400 mb-4">O setor comercial será identificado e salvo de forma 100% automática.</p>
+            <p className="text-[11px] text-slate-400 mb-4">O setor comercial será identificado e salvo de forma automática.</p>
             
             <form onSubmit={salvarTicket} className="space-y-4">
               <div className="relative">
@@ -748,7 +717,6 @@ export default function App() {
                 <input type="text" placeholder="Nome comercial" value={modalNome} onChange={e => setModalNome(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white" />
               </div>
 
-              {/* Preview visual do setor autodetectado */}
               {modalSetorAuto && (
                 <div className="p-3 bg-blue-950/40 border border-blue-900/60 rounded-xl text-xs">
                   <span className="text-slate-400 block text-[10px] uppercase font-bold">Setor Detectado Automaticamente:</span>
@@ -765,12 +733,11 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL TRANSAÇÃO */}
       {isTxModalOpen && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6">
             <h3 className="text-base font-bold text-white mb-3">{txId ? '✏️ Ajustar Ordem Existente' : '💸 Lançar Ordem de Mercado'}</h3>
-            <form onSubmit={salvarTransacao} className="space-y-4">
+            <form onSubmit={salvarTransaction} className="space-y-4">
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="block text-[10px] text-slate-400 mb-1 font-semibold">Data</label>
