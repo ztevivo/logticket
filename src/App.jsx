@@ -17,6 +17,13 @@ const SB_HDR = {
   'Prefer': 'return=representation' 
 };
 
+// Função auxiliar para normalizar tickers fracionários na busca de logs
+const normalizarTicker = (ticker) => {
+  if (!ticker) return '';
+  const t = ticker.toUpperCase().trim();
+  return t.endsWith('F') && t.length > 5 ? t.slice(0, -1) : t;
+};
+
 export default function App() {
   // ── ESTADOS DA APLICAÇÃO ──────────────────────────────────────────────────
   const [tickets, setTickets] = useState([]);
@@ -32,7 +39,7 @@ export default function App() {
   const [modalTicker, setModalTicker] = useState('');
   const [modalNome, setModalNome] = useState('');
   
-  // Modal de Transações (Compra/Venda) - Incluído campo de data customizado
+  // Modal de Transações (Compra/Venda)
   const [isTxModalOpen, setIsTxModalOpen] = useState(false);
   const [txId, setTxId] = useState(''); 
   const [txTicker, setTxTicker] = useState('');
@@ -157,12 +164,13 @@ export default function App() {
 
       for (const t of ticketsAlvo) {
         const tickerChave = t.ticker.toUpperCase().trim();
-        let precoAtual = precosMercado[tickerChave];
+        const tickerNormalizado = normalizarTicker(tickerChave);
+        let precoAtual = precosMercado[tickerChave] || precosMercado[tickerNormalizado];
         let statusLog = "Atualizado via API (Lote)";
 
         if (!precoAtual || isNaN(precoAtual)) {
           try {
-            const resIndividual = await fetch(`https://brapi.dev/api/quote/${tickerChave}?token=${BRAPI_TOKEN}`);
+            const resIndividual = await fetch(`https://brapi.dev/api/quote/${tickerNormalizado}?token=${BRAPI_TOKEN}`);
             if (resIndividual.ok) {
               const dadosIndiv = await resIndividual.json();
               if (dadosIndiv.results?.[0]?.regularMarketPrice) {
@@ -174,7 +182,7 @@ export default function App() {
         }
 
         if (!precoAtual || isNaN(precoAtual)) {
-          const logsDoAtivo = logsHistoricos.filter(l => l.ticker.toUpperCase() === tickerChave);
+          const logsDoAtivo = logsHistoricos.filter(l => normalizarTicker(l.ticker) === tickerNormalizado);
           precoAtual = logsDoAtivo[logsDoAtivo.length - 1] ? parseFloat(logsDoAtivo[logsDoAtivo.length - 1].preco) : 25.00;
           statusLog = "Preço Histórico Base (Fallback)";
         }
@@ -203,7 +211,6 @@ export default function App() {
     let totalQtd = 0;
     let totalCustoGlobal = 0;
 
-    // Ordenação cronológica correta para reconstruir o preço médio passo a passo
     [...txsDoAtivo].sort((a, b) => new Date(a.registrado_em) - new Date(b.registrado_em)).forEach(tx => {
       const q = parseInt(tx.quantidade);
       const p = parseFloat(tx.preco);
@@ -229,7 +236,7 @@ export default function App() {
     });
   };
 
-  // ── OPERAÇÕES DO HISTÓRICO FINANCEIRO (C.R.U.D DE TRANSAÇÕES) ───────────────
+  // ── OPERAÇÕES DO HISTÓRICO FINANCEIRO ───────────────────────────────────────
   const abrirModalTransacao = (idOrdem = '', tickerPredefinido = '') => {
     if (idOrdem) {
       const txExistente = transacoes.find(t => t.id === idOrdem);
@@ -255,7 +262,7 @@ export default function App() {
     const qty = parseInt(txQuantidade);
     const prc = parseFloat(txPreco);
     const tkr = txTicker.toUpperCase();
-    const dataIso = new Date(txData + 'T12:00:00').toISOString(); // Evita fuso horário quebrando o dia anterior
+    const dataIso = new Date(txData + 'T12:00:00').toISOString();
 
     if (!tkr || isNaN(qty) || qty <= 0 || isNaN(prc) || prc <= 0) {
       alert('Dados de lançamento inválidos.');
@@ -292,7 +299,7 @@ export default function App() {
   };
 
   const excluirTransacao = async (id, ticker) => {
-    if (!confirm('Deseja deletar permanentemente este lançamento? O preço médio e as cotas do ativo serão recalculados automaticamente.')) return;
+    if (!confirm('Deseja deletar permanentemente este lançamento? O preço médio e as cotas serão recalculados automaticamente.')) return;
     try {
       const res = await fetch(`${SB_URL}/rest/v1/finance_transactions?id=eq.${id}`, { method: 'DELETE', headers: SB_HDR });
       if (!res.ok) throw new Error('Erro ao apagar ordem.');
@@ -307,7 +314,6 @@ export default function App() {
     } catch (e) { showToast(e.message, 'error'); }
   };
 
-  // CRUD Tickets Básicos
   const salvarTicket = async (e) => {
     e.preventDefault();
     if (!modalTicker.trim() || !modalNome.trim()) return;
@@ -333,9 +339,10 @@ export default function App() {
     const ativosComSaldo = tickets.filter(t => parseInt(t.quantidade || 0) > 0);
     const labels = ativosComSaldo.map(t => t.ticker.toUpperCase());
     const dataValores = ativosComSaldo.map(t => {
-      const logs = logsHistoricos.filter(l => l.ticker.toUpperCase() === t.ticker.toUpperCase());
+      const tkNorm = normalizarTicker(t.ticker);
+      const logs = logsHistoricos.filter(l => normalizarTicker(l.ticker) === tkNorm);
       const pMercado = logs[logs.length - 1] ? parseFloat(logs[logs.length - 1].preco) : parseFloat(t.preco_custo || 0);
-      return sandy = parseInt(t.quantidade) * pMercado;
+      return parseInt(t.quantidade) * pMercado; // Corrigido erro de atribuição inválida aqui
     });
     const cores = ['#3b82f6', '#10b981', '#ef4444', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6'];
     return { labels, datasets: [{ data: dataValores, backgroundColor: cores.slice(0, labels.length), borderWidth: 1, borderColor: '#1e293b' }] };
@@ -398,7 +405,8 @@ export default function App() {
             <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">Posição Consolidada</h2>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {tickets.map(t => {
-                const logs = logsHistoricos.filter(l => l.ticker.toUpperCase() === t.ticker.toUpperCase());
+                const tkNorm = normalizarTicker(t.ticker);
+                const logs = logsHistoricos.filter(l => normalizarTicker(l.ticker) === tkNorm);
                 const precoMercado = logs[logs.length - 1] ? parseFloat(logs[logs.length - 1].preco) : 0;
                 const qtdVal = parseInt(t.quantidade || 0);
 
@@ -442,7 +450,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* GRÁFICO HISTÓRICO DE PREÇO */}
+        {/* GRÁFICO HISTÓRICO */}
         <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
             <h3 className="text-sm font-bold text-slate-200">🎛️ Flutuação de Mercado por Período</h3>
@@ -456,7 +464,7 @@ export default function App() {
           </div>
         </section>
 
-        {/* EXTRATO INTEGRAL DE MOVIMENTAÇÕES (COMPRA / VENDA) */}
+        {/* EXTRATO INTEGRAL DE MOVIMENTAÇÕES */}
         <section className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
           <div className="p-4 bg-slate-900/50 border-b border-slate-800">
             <h3 className="text-sm font-bold text-slate-200">📋 Livro de Registro e Extrato de Ordens</h3>
