@@ -210,6 +210,18 @@ export default function App() {
     finally { setLoadingSugestoes(false); }
   };
 
+  // NOVA FUNÇÃO: Abre o modal para atualizar dados legados chamando diretamente a Brapi
+  const abrirModalEditarTicket = async (id, ticker, nomeAtual) => {
+    setModalId(id);
+    setModalTicker(ticker.toUpperCase());
+    setModalNome(nomeAtual);
+    setModalSetorAuto('');
+    setIsModalOpen(true);
+    
+    // Executa imediatamente o refresh inteligente dos metadados corporativos
+    await selecionarSugestao(ticker);
+  };
+
   const ejecutarCronVerificacao = async () => {
     if (!Array.isArray(tickets) || tickets.length === 0) return;
     setIsCronRunning(true);
@@ -317,7 +329,7 @@ export default function App() {
         await fetch(`${SB_URL}/rest/v1/finance_transactions?id=eq.${txId}`, {
           method: 'PATCH',
           headers: SB_HDR,
-          body: JSON.stringify({ ticker: tkr, tipo: txTipo, quantidade: qty, preco: prc, registrado_em: dataIso })
+          body: JSON.stringify({ ticker: tkr, tipo: txTipo, quantity: qty, preco: prc, registrado_em: dataIso })
         });
       } else {
         await fetch(`${SB_URL}/rest/v1/finance_transactions`, {
@@ -387,11 +399,17 @@ export default function App() {
     } catch (err) { showToast(err.message, 'error'); }
   };
 
+  // REFORMULADO COM ALERTA: Evita deleção acidental de ativos cadastrados no portfólio
   const excluirTicket = async (id, ticker) => {
-    if (!confirm(`Remover painel de monitoramento de ${ticker}?`)) return;
-    await fetch(`${SB_URL}/rest/v1/finance_tickets?id=eq.${id}`, { method: 'DELETE', headers: SB_HDR });
-    await fetch(`${SB_URL}/rest/v1/finance_target_assets?ticker=eq.${ticker.toUpperCase()}`, { method: 'DELETE', headers: SB_HDR });
-    await carregarDados();
+    const confirmacao = window.confirm(`⚠️ ATENÇÃO EXCLUSÃO:\nVocê tem certeza de que deseja remover permanentemente o painel de monitoramento do ativo ${ticker.toUpperCase()}? Esta ação não pode ser desfeita.`);
+    if (!confirmacao) return;
+
+    try {
+      await fetch(`${SB_URL}/rest/v1/finance_tickets?id=eq.${id}`, { method: 'DELETE', headers: SB_HDR });
+      await fetch(`${SB_URL}/rest/v1/finance_target_assets?ticker=eq.${ticker.toUpperCase()}`, { method: 'DELETE', headers: SB_HDR });
+      await carregarDados();
+      showToast(`Ativo ${ticker.toUpperCase()} removido com sucesso.`);
+    } catch (err) { showToast(err.message, 'error'); }
   };
 
   const adicionarSetor = async (e) => {
@@ -543,7 +561,6 @@ export default function App() {
       {/* Header Glassmorphism */}
       <header className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10 bg-slate-900/40 backdrop-blur-md border border-slate-900 p-6 rounded-2xl shadow-xl shadow-black/20">
         <div className="flex items-center gap-4">
-          {/* Logo Abstrata: Cestas Trançadas */}
           <div className="p-2.5 bg-blue-600/10 border border-blue-500/20 rounded-xl text-blue-400">
             <svg className="w-8 h-8" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path d="M4 8H20M4 16H20M8 4V20M16 4V20" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
@@ -555,7 +572,7 @@ export default function App() {
               <h1 className="text-2xl font-extrabold bg-gradient-to-r from-blue-400 via-indigo-400 to-purple-400 bg-clip-text text-transparent tracking-tight">
                 LogTicket
               </h1>
-              <span className="text-[10px] bg-blue-500/10 border border-blue-500/20 text-blue-400 font-mono px-1.5 py-0.5 rounded">v2.4</span>
+              <span className="text-[10px] bg-blue-500/10 border border-blue-500/20 text-blue-400 font-mono px-1.5 py-0.5 rounded">v2.5</span>
             </div>
             <p className="text-xs text-slate-400 mt-1 font-medium">Gestão Automatizada de Portfólio Auditável</p>
             
@@ -580,7 +597,7 @@ export default function App() {
           <button onClick={() => abrirModalTransacao()} className="flex-1 md:flex-none px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold text-xs rounded-xl transition-all shadow-lg shadow-emerald-950/20 active:scale-[0.98]">
             💸 Registrar Ordem
           </button>
-          <button onClick={() => { setModalId(''); setModalTicker(''); setModalNome(''); setModalSetorAuto(''); setIsModalOpen(true); }} className="flex-1 md:flex-none px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs rounded-xl transition-all border border-slate-700/60 active:scale-[0.98]">
+          <button onClick={() => { setModalId(''); setModalTicker(''); setModalNome(''); setModalSetorAuto(''); setIsModalOpen(true); }} className="flex-1 md:flex-none px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-slate-100 font-bold text-xs rounded-xl transition-all shadow-lg active:scale-[0.98]">
             ➕ Novo Ticker
           </button>
           <button 
@@ -657,9 +674,24 @@ export default function App() {
                               📁 {setorPai}
                             </span>
                           </div>
-                          <button onClick={() => excluirTicket(t.id, t.ticker)} className="p-1 text-slate-600 hover:text-rose-400 text-sm transition-colors rounded-lg hover:bg-rose-500/5">
-                            ✕
-                          </button>
+                          
+                          {/* CONTROLADORES ATUALIZADOS: Botão de Refresh Brapi (⚙️) e Botão Filtrado Antiacidentes (✕) */}
+                          <div className="flex items-center gap-1.5">
+                            <button 
+                              onClick={() => abrirModalEditarTicket(t.id, t.ticker, t.nome)} 
+                              title="Refrescar metadados corporativos via Brapi"
+                              className="p-1.5 text-slate-500 hover:text-blue-400 text-xs transition-colors rounded-lg hover:bg-blue-500/10"
+                            >
+                              ⚙️
+                            </button>
+                            <button 
+                              onClick={() => excluirTicket(t.id, t.ticker)} 
+                              title="Remover ativo com auditoria"
+                              className="p-1.5 text-slate-600 hover:text-rose-400 text-sm transition-colors rounded-lg hover:bg-rose-500/5"
+                            >
+                              ✕
+                            </button>
+                          </div>
                         </div>
 
                         <div className="mt-5 bg-slate-950 p-2.5 rounded-xl border border-slate-900">
@@ -747,6 +779,58 @@ export default function App() {
                 ) : (
                   <div className="text-xs text-slate-500 font-medium text-center pt-28">Nenhum log histórico encontrado para os parâmetros selecionados.</div>
                 )}
+              </div>
+            </section>
+
+            {/* Livro de Ordens e Movimentações Financeiras */}
+            <section className="bg-slate-900/40 border border-slate-900 rounded-2xl overflow-hidden shadow-2xl">
+              <div className="p-4 bg-slate-900/50 border-b border-slate-900">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">📋 Livro de Ordens e Movimentações Financeiras</h3>
+              </div>
+              <div className="overflow-x-auto max-h-72">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="bg-slate-950 text-slate-400 border-b border-slate-900 font-mono text-[11px]">
+                      <th className="p-4">Data</th>
+                      <th className="p-4">Ativo</th>
+                      <th className="p-4">Ação</th>
+                      <th className="p-4">Volume</th>
+                      <th className="p-4">Custo Unitário</th>
+                      <th className="p-4 text-center">Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-900/60 font-medium">
+                    {transacoes.map(tx => {
+                      if (!tx) return null;
+                      return (
+                        <tr key={tx.id} className="hover:bg-slate-900/30 transition-colors">
+                          <td className="p-4 font-mono text-slate-400">{tx.registrado_em ? new Date(tx.registrado_em).toLocaleDateString('pt-BR') : '---'}</td>
+                          <td className="p-4 font-bold text-blue-400 font-mono tracking-wider">{tx.ticker?.toUpperCase()}</td>
+                          <td className="p-4">
+                            <span className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold font-mono tracking-wide ${tx.tipo === 'COMPRA' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}`}>
+                              {tx.tipo}
+                            </span>
+                          </td>
+                          <td className="p-4 font-mono text-slate-300">{tx.quantidade} un</td>
+                          <td className="p-4 font-mono text-slate-300">R$ {parseFloat(tx.preco || 0).toFixed(2)}</td>
+                          <td className="p-4 text-center flex items-center justify-center gap-4">
+                            <button onClick={() => abrirModalTransacao(tx.id)} className="text-blue-400 hover:text-blue-300 text-xs flex items-center gap-1 font-semibold transition-colors">
+                              ✏️ Ajustar
+                            </button>
+                            <button onClick={() => excluirTransacao(tx.id, tx.ticker)} className="text-slate-600 hover:text-rose-400 text-xs transition-colors">
+                              ✕ Deletar
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {transacoes.length === 0 && (
+                      <tr>
+                        <td colSpan="6" className="p-8 text-center text-xs text-slate-500 font-medium">Nenhum lançamento contábil registrado no histórico do sistema.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
               </div>
             </section>
           </>
@@ -932,11 +1016,11 @@ export default function App() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-[11px] text-slate-400 font-medium mb-1">Quantidade Líquida</label>
-                  <input type="number" placeholder="Ex: 100" value={txQuantidade} onChange={e => setTxQuantidade(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white font-mono focus:outline-none" />
+                  <input type="number" placeholder="Qtd" value={txQuantidade} onChange={e => setTxQuantidade(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white font-mono focus:outline-none" />
                 </div>
                 <div>
                   <label className="block text-[11px] text-slate-400 font-medium mb-1">Preço Unitário (R$)</label>
-                  <input type="number" step="0.01" placeholder="Ex: 24.50" value={txPreco} onChange={e => setTxPreco(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white font-mono focus:outline-none" />
+                  <input type="number" step="0.01" placeholder="Preço" value={txPreco} onChange={e => setTxPreco(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white font-mono focus:outline-none" />
                 </div>
               </div>
               <div>
