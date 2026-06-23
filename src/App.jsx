@@ -145,9 +145,7 @@ export default function App() {
         if (data.results && data.results[0]) {
           const ativoObjeto = data.results[0];
           const nomeCompleto = ativoObjeto.longName || ativoObjeto.shortName || 'Empresa Cadastrada';
-          
-          // CORREÇÃO AQUI: Alterado de .industry para .sector que é retornado pela BRAPI
-          const setorExtraido = ativoObjeto.sector || 'Outros / Não Classificado';
+          const setorExtraido = ativoObjeto.sector || ativoObjeto.industry || 'Outros / Não Classificado';
           
           setModalNome(nomeCompleto);
           setModalSetorAuto(setorExtraido);
@@ -157,7 +155,7 @@ export default function App() {
     finally { setLoadingSugestoes(false); }
   };
 
-  const executarCronVerificacao = async () => {
+  const ejecutarCronVerificacao = async () => {
     if (tickets.length === 0) return;
     setIsCronRunning(true);
     try {
@@ -257,7 +255,7 @@ export default function App() {
         await fetch(`${SB_URL}/rest/v1/finance_transactions?id=eq.${txId}`, {
           method: 'PATCH',
           headers: SB_HDR,
-          body: JSON.stringify({ ticker: tkr, tipo: txTipo, quantidade: qty, preco: prc, registrado_em: dataIso })
+          body: JSON.stringify({ ticker: tkr, tipo: txTipo, Administrative: qty, preco: prc, registrado_em: dataIso })
         });
       } else {
         await fetch(`${SB_URL}/rest/v1/finance_transactions`, {
@@ -299,27 +297,38 @@ export default function App() {
       if (modalId) {
         await fetch(`${SB_URL}/rest/v1/finance_tickets?id=eq.${modalId}`, { method: 'PATCH', headers: SB_HDR, body: JSON.stringify({ nome: modalNome }) });
       } else {
+        // 1. Cria o Ticker na tabela principal
         await fetch(`${SB_URL}/rest/v1/finance_tickets`, { 
           method: 'POST', 
           headers: SB_HDR, 
           body: JSON.stringify({ ticker: tkrChave, nome: modalNome, quantidade: 0, preco_custo: 0 }) 
         });
 
-        await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
-          method: 'POST',
-          headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
-          body: JSON.stringify({ nome: setorDefinido, meta_percentual: 0 })
-        });
+        // 2. Abordagem Segura: Verifica se o setor já existe antes de tentar inserir
+        const checarSetor = await fetch(`${SB_URL}/rest/v1/finance_target_sectors?nome=eq.${encodeURIComponent(setorDefinido)}`, { method: 'GET', headers: SB_HDR });
+        const dadosSetorExistem = await checarSetor.json();
 
+        if (!dadosSetorExistem || dadosSetorExistem.length === 0) {
+          await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
+            method: 'POST',
+            headers: SB_HDR,
+            body: JSON.stringify({ nome: setorDefinido, meta_percentual: 0 })
+          });
+        }
+
+        // 3. Deleta qualquer vínculo antigo residual para evitar conflito de PKey/Unique Constraint
+        await fetch(`${SB_URL}/rest/v1/finance_target_assets?ticker=eq.${tkrChave}`, { method: 'DELETE', headers: SB_HDR });
+
+        // 4. Cria o relacionamento limpo e atualizado
         await fetch(`${SB_URL}/rest/v1/finance_target_assets`, {
           method: 'POST',
-          headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+          headers: SB_HDR,
           body: JSON.stringify({ ticker: tkrChave, setor_nome: setorDefinido, meta_group_percentual: 100 })
         });
       }
       setIsModalOpen(false);
       await carregarDados();
-      showToast(`Ticker ${tkrChave} cadastrado.`);
+      showToast(`Ticker ${tkrChave} cadastrado com setor ${setorDefinido}.`);
     } catch (err) { showToast(err.message, 'error'); }
   };
 
@@ -334,11 +343,22 @@ export default function App() {
     e.preventDefault();
     if (!novoSetorNome.trim() || !novoSetorMeta) return;
     try {
-      await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
-        method: 'POST',
-        headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
-        body: JSON.stringify({ nome: novoSetorNome.trim(), meta_percentual: parseFloat(novoSetorMeta) })
-      });
+      const checarSetor = await fetch(`${SB_URL}/rest/v1/finance_target_sectors?nome=eq.${encodeURIComponent(novoSetorNome.trim())}`, { method: 'GET', headers: SB_HDR });
+      const dadosSetorExistem = await checarSetor.json();
+
+      if (!dadosSetorExistem || dadosSetorExistem.length === 0) {
+        await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
+          method: 'POST',
+          headers: SB_HDR,
+          body: JSON.stringify({ nome: novoSetorNome.trim(), meta_percentual: parseFloat(novoSetorMeta) })
+        });
+      } else {
+        await fetch(`${SB_URL}/rest/v1/finance_target_sectors?nome=eq.${encodeURIComponent(novoSetorNome.trim())}`, {
+          method: 'PATCH',
+          headers: SB_HDR,
+          body: JSON.stringify({ meta_percentual: parseFloat(novoSetorMeta) })
+        });
+      }
       setNovoSetorNome('');
       setNovoSetorMeta('');
       await carregarDados();
@@ -369,15 +389,11 @@ export default function App() {
     const tkr = ticker.toUpperCase();
     const mGrupo = parseFloat(metaGrupo) || 0;
     try {
+      await fetch(`${SB_URL}/rest/v1/finance_target_assets?ticker=eq.${tkr}`, { method: 'DELETE', headers: SB_HDR });
       await fetch(`${SB_URL}/rest/v1/finance_target_assets`, {
         method: 'POST',
-        headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
-        body: JSON.stringify({ ticker: tkr, setor_nome: setor || null, meta_group_percentual: mGrupo })
-      });
-      await fetch(`${SB_URL}/rest/v1/finance_target_assets?ticker=eq.${tkr}`, {
-        method: 'PATCH',
         headers: SB_HDR,
-        body: JSON.stringify({ setor_nome: setor || null, meta_group_percentual: mGrupo })
+        body: JSON.stringify({ ticker: tkr, setor_nome: setor || null, meta_group_percentual: mGrupo })
       });
       setAtivosMeta(p => ({ ...p, [tkr]: { setor, metaGrupo: mGrupo } }));
     } catch (e) { console.error(e); }
@@ -462,14 +478,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 p-4 md:p-8 font-sans antialiased">
-      <style>{`
-        ::-webkit-scrollbar { width: 6px; height: 6px; }
-        ::-webkit-scrollbar-track { background: #020617; }
-        ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: #334155; }
-        .line-clamp-1 { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
-      `}</style>
-
       {toast.show && (
         <div className="fixed top-5 right-5 z-50 flex items-center p-4 rounded-xl bg-slate-900 border border-emerald-800 text-emerald-200 text-xs shadow-2xl">
           <span>✨</span> <span className="ml-2">{toast.message}</span>
@@ -495,6 +503,7 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto space-y-6">
+        
         {abaAtiva === 'home' && (
           <>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-900/40 p-5 rounded-2xl border border-slate-800/60">
