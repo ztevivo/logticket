@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler, ArcElement } from 'chart.js';
-import { Line, Doughnut } from 'react-react-chartjs-2';
 import { Line as LineChart, Doughnut as DoughnutChart } from 'react-chartjs-2';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler, ArcElement);
@@ -136,12 +135,10 @@ export default function App() {
     // 2. Validar cada setor individualmente em relação aos seus ativos internos
     Object.entries(setoresMeta).forEach(([nomeSetor, metaLimiteSetor]) => {
       let somaAtivosDoSetor = 0;
-      const ativosVinculados = [];
 
       Object.entries(ativosMeta).forEach(([ticker, info]) => {
         if (info.setor === nomeSetor) {
           somaAtivosDoSetor += info.metaGrupo;
-          ativosVinculados.push(ticker);
         }
       });
 
@@ -151,7 +148,7 @@ export default function App() {
     });
 
     setAlertasSistema(novosAlertas);
-  }, [setoresMeta, AtivosMeta]);
+  }, [setoresMeta, ativosMeta]);
 
   const buscarSetorFallbackViaLista = async (tickerLimpo) => {
     try {
@@ -416,11 +413,9 @@ export default function App() {
     } catch (err) { showToast(err.message, 'error'); }
   };
 
-  // VALIDAÇÃO IMPEDITIVA: Impede ultrapassar o teto estrito global de 100%
   const atualizarSetorMetaBD = async (setorAlterado, novoValor) => {
     const valorNumerico = parseFloat(novoValor) || 0;
     
-    // Calcula quanto seria o total com essa nova alteração
     const copiaSetores = { ...setoresMeta, [setorAlterado]: valorNumerico };
     const somaFutura = Object.values(copiaSetores).reduce((acc, curr) => acc + curr, 0);
 
@@ -437,14 +432,6 @@ export default function App() {
       });
       setSetoresMeta(copiaSetores);
     } catch (err) { console.error(err); }
-  };
-
-  const removerSetor = async (setor) => {
-    if (!confirm(`Remover permanentemente o setor "${setor}"?`)) return;
-    try {
-      await fetch(`${SB_URL}/rest/v1/finance_target_sectors?nome=eq.${setor}`, { method: 'DELETE', headers: SB_HDR });
-      await carregarDados();
-    } catch (e) { console.error(e); }
   };
 
   const vincularAtivoAoSetorBD = async (ticker, setor, metaGrupo) => {
@@ -773,7 +760,7 @@ export default function App() {
                       responsive: true,
                       maintainAspectRatio: false,
                       scales: {
-                        y: { grid: { color: '#1e293b/30' }, ticks: { color: '#64748b', font: { size: 10, family: 'JetBrains Mono' } } },
+                        y: { grid: { color: 'rgba(30, 41, 59, 0.3)' }, ticks: { color: '#64748b', font: { size: 10, family: 'JetBrains Mono' } } },
                         x: { grid: { display: false }, ticks: { color: '#64748b', font: { size: 9, family: 'JetBrains Mono' } } }
                       },
                       plugins: {
@@ -1007,7 +994,7 @@ export default function App() {
               </div>
               <button onClick={() => setIsTxModalOpen(false)} className="text-slate-500 hover:text-white text-xs">✕</button>
             </div>
-            <form onSubmit={salvarTransaction} className="space-y-4">
+            <form onSubmit={salvarTransacao} className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-[11px] text-slate-400 font-medium mb-1">Ticker Vinculado</label>
