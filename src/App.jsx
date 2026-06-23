@@ -1,4 +1,3 @@
-// src/App.jsx
 import React, { useState, useEffect } from 'react';
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler, ArcElement } from 'chart.js';
 import { Line, Doughnut } from 'react-chartjs-2';
@@ -159,7 +158,6 @@ export default function App() {
           const ativoObjeto = data.results[0];
           const nomeCompleto = ativoObjeto.longName || ativoObjeto.shortName || 'Empresa Cadastrada';
           
-          // Mapeamento dinâmico para extrair o setor de múltiplos locais possíveis na API do BRAPI
           const setorExtraido = ativoObjeto.industry || ativoObjeto.sector || ativoObjeto.segment || 'Outros / Não Classificado';
           
           setModalNome(nomeCompleto);
