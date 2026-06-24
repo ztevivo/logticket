@@ -16,6 +16,20 @@ const SB_HDR = {
   'Prefer': 'return=representation' 
 };
 
+// Bucket padrão: garante que TODO ativo acompanhado caia em alguma categoria,
+// mesmo que nunca tenha recebido um setor explícito (legado ou falha de detecção).
+const SETOR_PADRAO = 'Outros / Não Classificado';
+
+const normalizarSetor = (valor) => {
+  if (!valor || valor === 'Sem Setor' || valor === 'Sem Grupo') return SETOR_PADRAO;
+  return valor;
+};
+
+// Paleta única compartilhada entre os dois gráficos de pizza e a legenda/comparativo,
+// para que a MESMA cor represente a MESMA categoria em todos os lugares da tela.
+const PALETA_CATEGORIAS = ['#6366f1', '#14b8a6', '#f43f5e', '#eab308', '#a855f7', '#06b6d4', '#3b82f6', '#10b981', '#ec4899', '#f97316'];
+const corDaCategoria = (idx) => PALETA_CATEGORIAS[idx % PALETA_CATEGORIAS.length];
+
 export default function App() {
   const [abaAtiva, setAbaAtiva] = useState('home');
 
@@ -54,6 +68,7 @@ export default function App() {
   const [ativosMeta, setAtivosMeta] = useState({});
   const [novoSetorNome, setNovoSetorNome] = useState('');
   const [novoSetorMeta, setNovoSetorMeta] = useState('');
+  const [modoValorGraficos, setModoValorGraficos] = useState('percentual'); // 'percentual' | 'reais'
 
   const showToast = (message, type = 'info') => {
     setToast({ show: true, message, type });
@@ -327,7 +342,7 @@ export default function App() {
         await fetch(`${SB_URL}/rest/v1/finance_transactions?id=eq.${txId}`, {
           method: 'PATCH',
           headers: SB_HDR,
-          body: JSON.stringify({ ticker: tkr, tipo: txTipo, quantity: qty, preco: prc, registrado_em: dataIso })
+          body: JSON.stringify({ ticker: tkr, tipo: txTipo, quantidade: qty, preco: prc, registrado_em: dataIso })
         });
       } else {
         await fetch(`${SB_URL}/rest/v1/finance_transactions`, {
@@ -427,10 +442,13 @@ export default function App() {
 
   const atualizarSetorMetaBD = async (setor, valor) => {
     try {
-      await fetch(`${SB_URL}/rest/v1/finance_target_sectors?nome=eq.${setor}`, {
-        method: 'PATCH',
-        headers: SB_HDR,
-        body: JSON.stringify({ meta_percentual: parseFloat(valor) || 0 })
+      // Upsert (em vez de PATCH simples): se a categoria ainda não existir como
+      // linha no banco (ex: bucket padrão criado só em memória), ela é criada aqui
+      // em vez de a atualização falhar silenciosamente sem afetar nenhuma linha.
+      await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
+        method: 'POST',
+        headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+        body: JSON.stringify({ nome: setor, meta_percentual: parseFloat(valor) || 0 })
       });
       setSetoresMeta(p => ({ ...p, [setor]: parseFloat(valor) || 0 }));
     } catch (err) { console.error(err); }
@@ -448,24 +466,25 @@ export default function App() {
   const vincularAtivoAoSetorBD = async (ticker, setor, metaGrupo) => {
     const tkr = ticker.toUpperCase();
     const mGrupo = parseFloat(metaGrupo) || 0;
+    const setorFinal = normalizarSetor(setor);
     
     // Atualiza imediatamente o estado local para evitar atraso visual (optimistic update)
     setAtivosMeta(p => ({
       ...p,
-      [tkr]: { setor: setor || 'Sem Setor', metaGrupo: mGrupo }
+      [tkr]: { setor: setorFinal, metaGrupo: mGrupo }
     }));
 
     try {
       await fetch(`${SB_URL}/rest/v1/finance_target_assets`, {
         method: 'POST',
         headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
-        body: JSON.stringify({ ticker: tkr, setor_nome: setor || null, meta_group_percentual: mGrupo })
+        body: JSON.stringify({ ticker: tkr, setor_nome: setorFinal, meta_group_percentual: mGrupo })
       });
       
       await fetch(`${SB_URL}/rest/v1/finance_target_assets?ticker=eq.${tkr}`, {
         method: 'PATCH',
         headers: SB_HDR,
-        body: JSON.stringify({ setor_nome: setor || null, meta_group_percentual: mGrupo })
+        body: JSON.stringify({ setor_nome: setorFinal, meta_group_percentual: mGrupo })
       });
       
       showToast(`Setor de ${tkr} redefinido com sucesso!`);
@@ -491,41 +510,107 @@ export default function App() {
     return acc + (parseInt(t.quantidade || 0) * precoMercado);
   }, 0) : 0;
 
-  const prepararPizzaReal = () => {
-    const ativosComSaldo = Array.isArray(tickets) ? tickets.filter(t => t && parseInt(t.quantidade || 0) > 0) : [];
-    return {
-      labels: ativosComSaldo.map(t => t.ticker.toUpperCase()),
-      datasets: [{
-        data: ativosComSaldo.map(t => {
-          const logs = Array.isArray(logsHistoricos) ? logsHistoricos.filter(l => l && l.ticker && l.ticker.toUpperCase() === t.ticker.toUpperCase()) : [];
-          return parseInt(t.quantidade) * (logs[logs.length - 1] ? parseFloat(logs[logs.length - 1].preco) : parseFloat(t.preco_custo || 0));
-        }),
-        backgroundColor: ['#3b82f6', '#10b981', '#f43f5e', '#eab308', '#8b5cf6', '#ec4899', '#14b8a6'],
-        borderWidth: 0
-      }]
-    };
+  // Consolida, por CATEGORIA (setor), a meta configurada e o quanto já está
+  // efetivamente comprado. Isso garante que os dois gráficos do Dashboard fiquem
+  // comparáveis (mesmas categorias, mesma ordem, mesmas cores) e que TODO ativo
+  // acompanhado apareça em alguma categoria — mesmo que ainda não tenha sido
+  // classificado (cai no bucket "Outros / Não Classificado").
+  const resumoCategorias = (() => {
+    const mapa = {};
+
+    // Garante que toda categoria já configurada na aba Metas apareça, mesmo com 0% comprado
+    Object.keys(setoresMeta).forEach(setor => {
+      mapa[setor] = { setor, metaPct: setoresMeta[setor] || 0, realValor: 0 };
+    });
+
+    (Array.isArray(tickets) ? tickets : []).forEach(t => {
+      if (!t) return;
+      const tkr = t.ticker.toUpperCase();
+      const logs = Array.isArray(logsHistoricos) ? logsHistoricos.filter(l => l && l.ticker && l.ticker.toUpperCase() === tkr) : [];
+      const precoMercado = logs[logs.length - 1] ? parseFloat(logs[logs.length - 1].preco) : parseFloat(t.preco_custo || 0);
+      const valorReal = parseInt(t.quantidade || 0) * precoMercado;
+
+      const setor = normalizarSetor(ativosMeta[tkr]?.setor);
+      if (!mapa[setor]) mapa[setor] = { setor, metaPct: setoresMeta[setor] || 0, realValor: 0 };
+      mapa[setor].realValor += valorReal;
+    });
+
+    return Object.values(mapa).sort((a, b) => b.metaPct - a.metaPct);
+  })();
+
+  const totalMetaPct = resumoCategorias.reduce((acc, c) => acc + c.metaPct, 0);
+
+  // Agrupa os tickets por categoria para a aba "Metas & Setores" — organizando
+  // visualmente o percentual macro por setor e, dentro dele, o peso de cada ativo.
+  const ativosAgrupadosPorSetor = (() => {
+    const grupos = {};
+    Object.keys(setoresMeta).forEach(s => { grupos[s] = []; });
+
+    (Array.isArray(tickets) ? tickets : []).forEach(t => {
+      if (!t) return;
+      const tkr = t.ticker.toUpperCase();
+      const info = ativosMeta[tkr] || { setor: '', metaGrupo: 0 };
+      const setor = normalizarSetor(info.setor);
+      if (!grupos[setor]) grupos[setor] = [];
+      grupos[setor].push({ ticket: t, metaGrupo: info.metaGrupo || 0 });
+    });
+
+    return grupos;
+  })();
+
+  const prepararPizzaMetaPorCategoria = () => ({
+    labels: resumoCategorias.map(c => c.setor),
+    datasets: [{
+      data: resumoCategorias.map(c => c.metaPct),
+      backgroundColor: resumoCategorias.map((_, i) => corDaCategoria(i)),
+      borderWidth: 0
+    }]
+  });
+
+  const prepararPizzaRealPorCategoria = () => ({
+    labels: resumoCategorias.map(c => c.setor),
+    datasets: [{
+      data: resumoCategorias.map(c => c.realValor),
+      backgroundColor: resumoCategorias.map((_, i) => corDaCategoria(i)),
+      borderWidth: 0
+    }]
+  });
+
+  // Formata o valor de uma categoria conforme o toggle %/R$ escolhido pelo usuário
+  const formatarValorExibicao = (categoria, campo) => {
+    if (campo === 'meta') {
+      return modoValorGraficos === 'percentual'
+        ? `${categoria.metaPct.toFixed(1)}%`
+        : `R$ ${((categoria.metaPct / 100) * totalPatrimonioReal).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`;
+    }
+    const realPct = totalPatrimonioReal > 0 ? (categoria.realValor / totalPatrimonioReal) * 100 : 0;
+    return modoValorGraficos === 'percentual'
+      ? `${realPct.toFixed(1)}%`
+      : `R$ ${categoria.realValor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`;
   };
 
-  const prepararPizzaMeta = () => {
-    return {
-      labels: Object.keys(setoresMeta),
-      datasets: [{
-        data: Object.values(setoresMeta),
-        backgroundColor: ['#6366f1', '#14b8a6', '#f43f5e', '#eab308', '#a855f7', '#06b6d4'],
-        borderWidth: 0
-      }]
-    };
+  // Diferença Real vs Meta, sempre em pontos percentuais (independe do toggle %/R$)
+  const calcularDeltaPP = (categoria) => {
+    const realPct = totalPatrimonioReal > 0 ? (categoria.realValor / totalPatrimonioReal) * 100 : 0;
+    return realPct - categoria.metaPct;
   };
 
-  const opcoesPizzaPercentual = (titulo) => ({
+  const opcoesPizzaPercentual = (titulo, tipo = 'meta') => ({
     responsive: true,
     maintainAspectRatio: false,
     plugins: {
-      legend: { 
-        position: 'bottom', 
-        labels: { color: '#94a3b8', font: { size: 11, family: 'Plus Jakarta Sans', weight: '500' }, boxWidth: 12, padding: 15 } 
-      },
+      legend: { display: false }, // legenda customizada (com toggle %/R$) é renderizada abaixo, em HTML
       title: { display: true, text: titulo, color: '#f8fafc', font: { size: 14, family: 'Plus Jakarta Sans', weight: '700' }, padding: { bottom: 10 } },
+      tooltip: {
+        callbacks: {
+          label: (ctx) => {
+            const valor = ctx.parsed;
+            if (tipo === 'meta') return ` ${ctx.label}: ${valor.toFixed(1)}%`;
+            const pct = totalPatrimonioReal > 0 ? (valor / totalPatrimonioReal) * 100 : 0;
+            return ` ${ctx.label}: R$ ${valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} (${pct.toFixed(1)}%)`;
+          }
+        }
+      }
     }
   });
 
@@ -632,22 +717,71 @@ export default function App() {
         
         {abaAtiva === 'home' && (
           <>
-            {/* Charts Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-900/20 p-2 rounded-2xl border border-slate-900/60">
-              <div className="bg-slate-900/60 border border-slate-900/80 backdrop-blur-sm rounded-2xl p-6 h-72 shadow-lg">
-                {Object.keys(setoresMeta).length > 0 ? (
-                  <Doughnut data={prepararPizzaMeta()} options={opcoesPizzaPercentual('Alocação Objetiva / Meta (%)')} />
-                ) : (
-                  <div className="text-xs text-slate-500 font-medium text-center pt-28">Configure as metas na aba superior para visualizar.</div>
-                )}
+            {/* Charts Grid — Meta vs Real, ambos agrupados por categoria para serem comparáveis */}
+            <div className="bg-slate-900/20 p-2 rounded-2xl border border-slate-900/60 space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="bg-slate-900/60 border border-slate-900/80 backdrop-blur-sm rounded-2xl p-6 h-72 shadow-lg">
+                  {resumoCategorias.length > 0 ? (
+                    <Doughnut data={prepararPizzaMetaPorCategoria()} options={opcoesPizzaPercentual('Alocação Objetiva / Meta (%)', 'meta')} />
+                  ) : (
+                    <div className="text-xs text-slate-500 font-medium text-center pt-28">Configure as metas na aba superior para visualizar.</div>
+                  )}
+                </div>
+                <div className="bg-slate-900/60 border border-slate-900/80 backdrop-blur-sm rounded-2xl p-6 h-72 shadow-lg">
+                  {resumoCategorias.some(c => c.realValor > 0) ? (
+                    <Doughnut data={prepararPizzaRealPorCategoria()} options={opcoesPizzaPercentual('Alocação Líquida Real (%)', 'real')} />
+                  ) : (
+                    <div className="text-xs text-slate-500 font-medium text-center pt-28">Lance compras no extrato para computar a distribuição real.</div>
+                  )}
+                </div>
               </div>
-              <div className="bg-slate-900/60 border border-slate-900/80 backdrop-blur-sm rounded-2xl p-6 h-72 shadow-lg">
-                {tickets && tickets.some(t => t && parseInt(t.quantidade || 0) > 0) ? (
-                  <Doughnut data={prepararPizzaReal()} options={opcoesPizzaPercentual('Alocação Líquida Real (%)')} />
-                ) : (
-                  <div className="text-xs text-slate-500 font-medium text-center pt-28">Lance compras no extrato para computar a distribuição real.</div>
-                )}
-              </div>
+
+              {resumoCategorias.length > 0 && (
+                <div className="bg-slate-900/60 border border-slate-900/80 rounded-2xl p-5">
+                  <div className="flex flex-wrap justify-between items-center gap-3 mb-4">
+                    <div>
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300">Legenda & Comparativo por Categoria</h4>
+                      <p className="text-[11px] text-slate-500 mt-0.5">Meta configurada vs. o que está efetivamente comprado, por setor.</p>
+                    </div>
+                    <div className="flex gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800">
+                      <button type="button" onClick={() => setModoValorGraficos('percentual')} className={`px-3 py-1 text-[11px] font-bold rounded-md transition-all ${modoValorGraficos === 'percentual' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}>%</button>
+                      <button type="button" onClick={() => setModoValorGraficos('reais')} className={`px-3 py-1 text-[11px] font-bold rounded-md transition-all ${modoValorGraficos === 'reais' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}>R$</button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    {resumoCategorias.map((cat, idx) => {
+                      const deltaPP = calcularDeltaPP(cat);
+                      const corDelta = Math.abs(deltaPP) <= 2 ? 'text-emerald-400' : (deltaPP > 0 ? 'text-amber-400' : 'text-rose-400');
+                      return (
+                        <div key={cat.setor} className="grid grid-cols-2 sm:grid-cols-[1.6fr_1fr_1fr_1fr] gap-2 items-center bg-slate-950 px-3 py-2 rounded-xl border border-slate-900 text-xs">
+                          <div className="flex items-center gap-2 min-w-0 col-span-2 sm:col-span-1">
+                            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: corDaCategoria(idx) }} />
+                            <span className="font-semibold text-slate-300 truncate">{cat.setor}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-500 block">Meta</span>
+                            <strong className="font-mono text-purple-400">{formatarValorExibicao(cat, 'meta')}</strong>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-500 block">Real</span>
+                            <strong className="font-mono text-blue-400">{formatarValorExibicao(cat, 'real')}</strong>
+                          </div>
+                          <div className="text-right sm:text-left">
+                            <span className="text-[10px] text-slate-500 block">Δ vs meta</span>
+                            <strong className={`font-mono font-bold ${corDelta}`}>{deltaPP > 0 ? '+' : ''}{deltaPP.toFixed(1)} p.p.</strong>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="flex justify-between items-center mt-3 pt-3 border-t border-slate-900 text-[11px]">
+                    <span className="text-slate-500">Soma das metas configuradas por categoria</span>
+                    <span className={`font-mono font-bold ${Math.abs(totalMetaPct - 100) <= 0.5 ? 'text-emerald-400' : 'text-amber-400'}`}>{totalMetaPct.toFixed(1)}% <span className="text-slate-600">/ 100%</span></span>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Assets Grid */}
@@ -670,7 +804,7 @@ export default function App() {
 
                   // LEITURA CORRIGIDA: Puxa dinamicamente as alterações feitas no front ou sincronizadas do Supabase
                   const mAtivo = ativosMeta[t.ticker.toUpperCase()];
-                  const setorPai = mAtivo?.setor || 'Sem Setor';
+                  const setorPai = normalizarSetor(mAtivo?.setor);
                   const pctSetorAlvo = setoresMeta[setorPai] || 0;
                   const pctAlvoGlobal = (pctSetorAlvo * (mAtivo?.metaGrupo || 0)) / 100;
 
@@ -894,42 +1028,56 @@ export default function App() {
             <div className="lg:col-span-2 bg-slate-900/40 border border-slate-900 p-6 rounded-2xl space-y-6 shadow-md">
               <div>
                 <h3 className="text-sm font-bold text-slate-200">🔗 Distribuição e Pesos por Ativo</h3>
-                <p className="text-xs text-slate-400 mt-0.5">Determine o percentual de relevância interna de cada ticker dentro do seu respectivo grupo.</p>
+                <p className="text-xs text-slate-400 mt-0.5">Organizado por categoria. Defina quanto cada ativo representa dentro do seu setor — não é obrigatório somar 100%, é apenas um guia.</p>
               </div>
-              <div className="space-y-2.5 max-h-[460px] overflow-y-auto pr-2">
-                {tickets.map(t => {
-                  // MENSURAÇÃO REATIVA: Lê do estado mapeado corretamente e atribui valor de fallback
-                  const metaInfo = ativosMeta[t.ticker.toUpperCase()] || { setor: 'Sem Setor', metaGrupo: 0 };
+              <div className="space-y-4 max-h-[520px] overflow-y-auto pr-2">
+                {Object.entries(ativosAgrupadosPorSetor).map(([setor, itens]) => {
+                  const somaPesos = itens.reduce((acc, i) => acc + (parseFloat(i.metaGrupo) || 0), 0);
+                  const opcoesSetor = [...new Set([...Object.keys(setoresMeta), SETOR_PADRAO])];
                   return (
-                    <div key={t.id} className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center bg-slate-950 p-3.5 rounded-xl border border-slate-900">
-                      <div>
-                        <span className="text-xs font-bold text-blue-400 tracking-wider font-mono">{t.ticker.toUpperCase()}</span>
-                        <p className="text-[11px] text-slate-400 font-medium line-clamp-1 mt-0.5">{t.nome}</p>
+                    <div key={setor} className="bg-slate-950 rounded-xl border border-slate-900 p-3.5">
+                      <div className="flex justify-between items-center mb-2.5 gap-2">
+                        <span className="text-xs font-bold text-purple-300">📁 {setor}</span>
+                        {itens.length > 0 && (
+                          <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-md whitespace-nowrap ${Math.abs(somaPesos - 100) <= 0.5 ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>
+                            {somaPesos.toFixed(0)}% do setor distribuído
+                          </span>
+                        )}
                       </div>
-                      <div>
-                        <select 
-                          value={metaInfo.setor} 
-                          onChange={e => vincularAtivoAoSetorBD(t.ticker, e.target.value, metaInfo.metaGrupo)}
-                          className="w-full px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-300 font-medium focus:outline-none"
-                        >
-                          <option value="Sem Setor">Sem Setor</option>
-                          {Object.keys(setoresMeta).map(sNome => (
-                            <option key={sNome} value={sNome}>{sNome}</option>
+
+                      {itens.length === 0 ? (
+                        <p className="text-[11px] text-slate-600 italic">Nenhum ativo nesta categoria ainda.</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {itens.map(({ ticket: t, metaGrupo }) => (
+                            <div key={t.id} className="grid grid-cols-1 sm:grid-cols-3 gap-2 items-center bg-slate-900 p-2.5 rounded-lg border border-slate-800">
+                              <div>
+                                <span className="text-xs font-bold text-blue-400 tracking-wider font-mono">{t.ticker.toUpperCase()}</span>
+                                <p className="text-[10px] text-slate-500 font-medium line-clamp-1">{t.nome}</p>
+                              </div>
+                              <select
+                                value={setor}
+                                onChange={e => vincularAtivoAoSetorBD(t.ticker, e.target.value, metaGrupo)}
+                                className="w-full px-2 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-[11px] text-slate-300 font-medium focus:outline-none"
+                              >
+                                {opcoesSetor.map(sNome => (
+                                  <option key={sNome} value={sNome}>{sNome}</option>
+                                ))}
+                              </select>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="number"
+                                  placeholder="Peso"
+                                  value={metaGrupo}
+                                  onChange={e => vincularAtivoAoSetorBD(t.ticker, setor, e.target.value)}
+                                  className="w-full px-2 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-xs font-mono text-slate-300 focus:outline-none text-center"
+                                />
+                                <span className="text-[10px] text-slate-500 font-medium whitespace-nowrap">% do setor</span>
+                              </div>
+                            </div>
                           ))}
-                        </select>
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <input 
-                            type="number" 
-                            placeholder="Peso Grupo" 
-                            value={metaInfo.metaGrupo} 
-                            onChange={e => vincularAtivoAoSetorBD(t.ticker, metaInfo.setor, e.target.value)}
-                            className="w-full px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs font-mono text-slate-300 focus:outline-none text-center"
-                          />
-                          <span className="text-[11px] text-slate-500 font-medium">%&nbsp;no&nbsp;setor</span>
                         </div>
-                      </div>
+                      )}
                     </div>
                   );
                 })}
