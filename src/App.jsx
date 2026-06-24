@@ -8,7 +8,14 @@ const SB_URL = 'https://gghwqnqxquhrxchimerw.supabase.co';
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdnaHdxbnF4cXVocnhjaGltZXJ3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIxMzMxMjgsImV4cCI6MjA5NzcwOTEyOH0.mWAotOVvwVDL9gGnhbjn6asL7lWnrKpwc390nTf6RAc';
 const BRAPI_TOKEN = 'ws5Toz7mQL85uqbuWcXTDo';
 
-const SB_HDR = { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}`, 'Content-Type': 'application/json', 'Accept': 'application/json', 'Prefer': 'return=representation' };
+const SB_HDR = { 
+  'apikey': SB_KEY,
+  'Authorization': `Bearer ${SB_KEY}`,
+  'Content-Type': 'application/json',
+  'Accept': 'application/json',
+  'Prefer': 'return=representation' 
+};
+
 const SETOR_PADRAO = 'Outros / Não Classificado';
 const PALETA_CATEGORIAS = ['#6366f1', '#14b8a6', '#f43f5e', '#eab308', '#a855f7', '#06b6d4', '#3b82f6', '#10b981', '#ec4899', '#f97316'];
 const corDaCategoria = (idx) => PALETA_CATEGORIAS[idx % PALETA_CATEGORIAS.length];
@@ -19,13 +26,19 @@ export default function App() {
   const [transacoes, setTransacoes] = useState([]);
   const [valuations, setValuations] = useState([]);
   const [sectorRules, setSectorRules] = useState([]);
+  const [logsHistoricos, setLogsHistoricos] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [isCronRunning, setIsCronRunning] = useState(false);
   const [lastCheckTime, setLastCheckTime] = useState('Nunca verificado');
+  
+  // Modal states
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalId, setModalId] = useState('');
   const [modalTicker, setModalTicker] = useState('');
   const [modalNome, setModalNome] = useState('');
   const [modalSetorAuto, setModalSetorAuto] = useState('');
+  const [modalSetorSelecionado, setModalSetorSelecionado] = useState('');
+  
   const [isTxModalOpen, setIsTxModalOpen] = useState(false);
   const [txId, setTxId] = useState('');
   const [txTicker, setTxTicker] = useState('');
@@ -33,16 +46,20 @@ export default function App() {
   const [txQuantidade, setTxQuantidade] = useState('');
   const [txPreco, setTxPreco] = useState('');
   const [txData, setTxData] = useState(new Date().toISOString().split('T')[0]);
+
   const [isValModalOpen, setIsValModalOpen] = useState(false);
   const [valTicker, setValTicker] = useState('');
   const [valMetodologia, setValMetodologia] = useState('bazin');
   const [valPrecoTeto, setValPrecoTeto] = useState('');
   const [valMargem, setValMargem] = useState('');
+
   const [sugestoes, setSugestoes] = useState([]);
   const [loadingSugestoes, setLoadingSugestoes] = useState(false);
+  
   const [dataInicio, setDataInicio] = useState(new Date().toISOString().split('T')[0]);
   const [dataFim, setDataFim] = useState(new Date().toISOString().split('T')[0]);
   const [ativosSelecionados, setAtivosSelecionados] = useState([]);
+  
   const [toast, setToast] = useState({ show: false, message: '', type: 'info' });
   const [setoresMeta, setSetoresMeta] = useState({});
   const [ativosMeta, setAtivosMeta] = useState({});
@@ -50,38 +67,136 @@ export default function App() {
   const [novoSetorMeta, setNovoSetorMeta] = useState('');
   const [modoValorGraficos, setModoValorGraficos] = useState('percentual');
 
+  // Estado para armazenar preços atuais dos ativos
+  const [precosAtuais, setPrecosAtuais] = useState({});
+
   const showToast = (message, type = 'info') => {
     setToast({ show: true, message, type });
     setTimeout(() => setToast({ show: false, message: '', type: 'info' }), 4000);
   };
 
-  const recalcularPosicaoAtivo = useCallback(async (ticker) => {
+  // ===== FUNÇÃO PARA CALCULAR PREÇO MÉDIO NO FRONT-END =====
+  const calcularPrecoMedio = useCallback((ticker) => {
+    const transacoesAtivo = transacoes
+      .filter(tx => tx.ticker.toUpperCase() === ticker.toUpperCase())
+      .sort((a, b) => new Date(a.registrado_em) - new Date(b.registrado_em));
+
+    let quantidade = 0;
+    let custoTotal = 0;
+
+    transacoesAtivo.forEach(tx => {
+      const q = Number(tx.quantidade);
+      const p = Number(tx.preco);
+
+      if (tx.tipo === 'COMPRA') {
+        custoTotal += q * p;
+        quantidade += q;
+      } else {
+        if (quantidade > 0) {
+          const precoMedio = custoTotal / quantidade;
+          custoTotal -= precoMedio * q;
+          quantidade -= q;
+          if (quantidade <= 0) {
+            quantidade = 0;
+            custoTotal = 0;
+          }
+        }
+      }
+    });
+
+    const precoMedio = quantidade > 0 ? custoTotal / quantidade : 0;
+    return { quantidade, precoMedio, custoTotal };
+  }, [transacoes]);
+
+  // ===== FUNÇÃO PARA BUSCAR PREÇOS ATUAIS DA BRAPI =====
+  const buscarPrecosBrapi = useCallback(async (tickers) => {
+    if (!tickers || tickers.length === 0) return {};
+    
     try {
-      const response = await fetch(`${SB_URL}/rest/v1/rpc/calcular_posicao_ativo?ticker=eq.${ticker}`, { method: 'GET', headers: SB_HDR });
-      if (response.ok) { const data = await response.json(); if (data && data.length > 0) return data[0]; }
-      return null;
-    } catch (error) { console.error('Erro ao recalcular posição:', error); return null; }
+      const listaTickers = tickers.map(t => {
+        const tk = t.toUpperCase().trim();
+        return tk.endsWith('.SA') ? tk : `${tk}.SA`;
+      }).join(',');
+
+      const response = await fetch(`https://brapi.dev/api/quote/${listaTickers}?token=${BRAPI_TOKEN}`);
+      if (response.ok) {
+        const dados = await response.json();
+        const precos = {};
+        if (dados && dados.results) {
+          dados.results.forEach(ativo => {
+            if (ativo && ativo.symbol && ativo.regularMarketPrice !== undefined) {
+              const chaveLimpa = ativo.symbol.toUpperCase().replace('.SA', '').trim();
+              precos[chaveLimpa] = parseFloat(ativo.regularMarketPrice);
+            }
+          });
+        }
+        return precos;
+      }
+      return {};
+    } catch (error) {
+      console.error('Erro ao buscar preços da Brapi:', error);
+      return {};
+    }
   }, []);
 
-  const recalcularTodosAtivos = useCallback(async () => {
-    try { await fetch(`${SB_URL}/rest/v1/rpc/recalcular_todos_ativos`, { method: 'POST', headers: SB_HDR }); } 
-    catch (error) { console.error('Erro ao recalcular todos os ativos:', error); }
-  }, []);
+  // ===== FUNÇÃO PARA ATUALIZAR PREÇOS =====
+  const atualizarPrecos = useCallback(async () => {
+    if (!tickets || tickets.length === 0) return;
+    
+    setIsCronRunning(true);
+    try {
+      const tickers = tickets.map(t => t.ticker);
+      const precos = await buscarPrecosBrapi(tickers);
+      
+      if (Object.keys(precos).length > 0) {
+        setPrecosAtuais(precos);
+        
+        // Salvar logs de preços
+        const logsNovos = [];
+        Object.entries(precos).forEach(([ticker, preco]) => {
+          logsNovos.push({
+            ticker: ticker,
+            preco: parseFloat(parseFloat(preco).toFixed(2)),
+            status: "Atualização Automática de Portfólio",
+            registrado_em: new Date().toISOString()
+          });
+        });
 
+        if (logsNovos.length > 0) {
+          await fetch(`${SB_URL}/rest/v1/finance_price_logs`, { 
+            method: 'POST', 
+            headers: SB_HDR, 
+            body: JSON.stringify(logsNovos) 
+          });
+        }
+        
+        setLastCheckTime(new Date().toLocaleTimeString('pt-BR'));
+        showToast(`Preços atualizados para ${Object.keys(precos).length} ativos`, 'success');
+      }
+    } catch (err) {
+      showToast('Erro ao atualizar preços: ' + err.message, 'error');
+    } finally {
+      setIsCronRunning(false);
+    }
+  }, [tickets, buscarPrecosBrapi]);
+
+  // ===== CARREGAR DADOS =====
   const carregarDados = useCallback(async () => {
     setLoading(true);
     try {
-      const [resTickets, resTx, resVal, resRules] = await Promise.all([
+      const [resTickets, resTx, resVal, resRules, resLogs] = await Promise.all([
         fetch(`${SB_URL}/rest/v1/finance_tickets?order=ticker.asc`, { method: 'GET', headers: SB_HDR }),
         fetch(`${SB_URL}/rest/v1/finance_transactions?order=registrado_em.desc`, { method: 'GET', headers: SB_HDR }),
         fetch(`${SB_URL}/rest/v1/finance_asset_valuation?order=ticker.asc`, { method: 'GET', headers: SB_HDR }),
-        fetch(`${SB_URL}/rest/v1/finance_sector_rules`, { method: 'GET', headers: SB_HDR })
+        fetch(`${SB_URL}/rest/v1/finance_sector_rules`, { method: 'GET', headers: SB_HDR }),
+        fetch(`${SB_URL}/rest/v1/finance_price_logs?order=registrado_em.desc&limit=1000`, { method: 'GET', headers: SB_HDR })
       ]);
       
       const dataTickets = await resTickets.json();
       const dataTx = await resTx.json();
       const dataVal = await resVal.json();
       const dataRules = await resRules.json();
+      const dataLogs = await resLogs.json();
 
       let mapeamentoSetores = {};
       let mapeamentoAtivos = {};
@@ -90,7 +205,11 @@ export default function App() {
         const resS = await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, { method: 'GET', headers: SB_HDR });
         if (resS.ok) {
           const arrS = await resS.json();
-          if (Array.isArray(arrS)) arrS.forEach(s => { if (s && s.nome) mapeamentoSetores[s.nome] = parseFloat(s.meta_percentual || 0); });
+          if (Array.isArray(arrS)) {
+            arrS.forEach(s => { 
+              if (s && s.nome) mapeamentoSetores[s.nome] = parseFloat(s.meta_percentual || 0); 
+            });
+          }
         }
       } catch (e) { console.error("Erro ao carregar setores:", e); }
 
@@ -98,7 +217,16 @@ export default function App() {
         const resA = await fetch(`${SB_URL}/rest/v1/finance_target_assets`, { method: 'GET', headers: SB_HDR });
         if (resA.ok) {
           const arrA = await resA.json();
-          if (Array.isArray(arrA)) arrA.forEach(a => { if (a && a.ticker) mapeamentoAtivos[a.ticker.toUpperCase()] = { setor: a.setor_nome || 'Sem Setor', metaGrupo: parseFloat(a.meta_group_percentual || 0) }; });
+          if (Array.isArray(arrA)) {
+            arrA.forEach(a => { 
+              if (a && a.ticker) {
+                mapeamentoAtivos[a.ticker.toUpperCase()] = { 
+                  setor: a.setor_nome || 'Sem Setor', 
+                  metaGrupo: parseFloat(a.meta_group_percentual || 0) 
+                };
+              }
+            });
+          }
         }
       } catch (e) { console.error("Erro ao carregar metas de ativos:", e); }
 
@@ -106,25 +234,58 @@ export default function App() {
       setTransacoes(Array.isArray(dataTx) ? dataTx : []);
       setValuations(Array.isArray(dataVal) ? dataVal : []);
       setSectorRules(Array.isArray(dataRules) ? dataRules : []);
+      setLogsHistoricos(Array.isArray(dataLogs) ? dataLogs : []);
       setSetoresMeta(mapeamentoSetores);
       setAtivosMeta(mapeamentoAtivos);
       setLastCheckTime(new Date().toLocaleTimeString('pt-BR'));
-      await recalcularTodosAtivos();
-    } catch (err) { console.error(err); showToast("Erro na sincronização: " + err.message, 'error'); } 
-    finally { setLoading(false); }
-  }, [recalcularTodosAtivos]);
 
-  useEffect(() => { carregarDados(); }, [carregarDados]);
+      // Buscar preços atuais
+      if (dataTickets && dataTickets.length > 0) {
+        const tickers = dataTickets.map(t => t.ticker);
+        const precos = await buscarPrecosBrapi(tickers);
+        setPrecosAtuais(precos);
+      }
 
+    } catch (err) {
+      console.error(err);
+      showToast("Erro na sincronização: " + err.message, 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [buscarPrecosBrapi]);
+
+  useEffect(() => { 
+    carregarDados(); 
+  }, [carregarDados]);
+
+  // Atualizar preços a cada 15 minutos
   useEffect(() => {
-    if (modalId || !modalTicker.trim() || modalTicker.trim().length < 2) { setSugestoes([]); return; }
+    const interval = setInterval(() => {
+      if (tickets && tickets.length > 0) {
+        atualizarPrecos();
+      }
+    }, 900000); // 15 minutos
+
+    return () => clearInterval(interval);
+  }, [tickets, atualizarPrecos]);
+
+  // ===== SUGESTÕES DE TICKER =====
+  useEffect(() => {
+    if (modalId || !modalTicker.trim() || modalTicker.trim().length < 2) {
+      setSugestoes([]);
+      return;
+    }
     const delayDebounceFn = setTimeout(async () => {
       setLoadingSugestoes(true);
       try {
         const query = modalTicker.trim().toUpperCase();
         const res = await fetch(`https://brapi.dev/api/available?search=${query}&token=${BRAPI_TOKEN}`);
-        if (res.ok) { const dados = await res.json(); if (dados && dados.stocks) setSugestoes(dados.stocks.slice(0, 5)); }
-      } catch (error) { console.error(error); } finally { setLoadingSugestoes(false); }
+        if (res.ok) {
+          const dados = await res.json();
+          if (dados && dados.stocks) setSugestoes(dados.stocks.slice(0, 5));
+        }
+      } catch (error) { console.error(error); }
+      finally { setLoadingSugestoes(false); }
     }, 600);
     return () => clearTimeout(delayDebounceFn);
   }, [modalTicker, modalId]);
@@ -163,17 +324,30 @@ export default function App() {
         if (data && data.results && data.results[0]) {
           const ativoObjeto = data.results[0];
           nomeCompleto = ativoObjeto.longName || ativoObjeto.shortName || 'Empresa Cadastrada';
-          setorExtraido = ativoObjeto.summaryProfile?.sector || ativoObjeto.summaryProfile?.sectorDisp || ativoObjeto.summaryProfile?.industry || ativoObjeto.summaryProfile?.industryDisp || ativoObjeto.sector || ativoObjeto.industry || ativoObjeto.segment || '';
+          setorExtraido = ativoObjeto.summaryProfile?.sector || 
+                         ativoObjeto.summaryProfile?.sectorDisp || 
+                         ativoObjeto.summaryProfile?.industry || 
+                         ativoObjeto.summaryProfile?.industryDisp || 
+                         ativoObjeto.sector || 
+                         ativoObjeto.industry || 
+                         ativoObjeto.segment || '';
         }
       }
       if (!setorExtraido) setorExtraido = await buscarSetorFallbackViaLista(limpo);
       if (!setorExtraido) setorExtraido = inferirSetorPorSufixo(limpo);
       if (nomeCompleto) setModalNome(nomeCompleto);
       setModalSetorAuto(setorExtraido);
-    } catch (e) { console.error(e); setModalSetorAuto(inferirSetorPorSufixo(limpo)); } 
-    finally { setLoadingSugestoes(false); }
+      setModalSetorSelecionado(setorExtraido);
+    } catch (e) { 
+      console.error(e); 
+      setModalSetorAuto(inferirSetorPorSufixo(limpo));
+      setModalSetorSelecionado(inferirSetorPorSufixo(limpo));
+    } finally { 
+      setLoadingSugestoes(false); 
+    }
   };
 
+  // ===== EDIÇÃO DE TICKER =====
   const abrirModalEditarTicket = async (id, ticker, nomeAtual) => {
     setModalId(id);
     setModalTicker(ticker.toUpperCase());
@@ -184,30 +358,65 @@ export default function App() {
   };
 
   const persistirSetorAtivo = async (tkrChave, setorDefinido, pesoGrupoExistente = null) => {
-    await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, { method: 'POST', headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' }, body: JSON.stringify({ nome: setorDefinido, meta_percentual: 0 }) });
+    // Primeiro, garantir que o setor existe na tabela de metas
+    await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
+      method: 'POST',
+      headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+      body: JSON.stringify({ nome: setorDefinido, meta_percentual: setoresMeta[setorDefinido] || 0 })
+    });
+
     const pesoGrupo = (pesoGrupoExistente !== null && pesoGrupoExistente !== undefined) ? pesoGrupoExistente : 100;
-    await fetch(`${SB_URL}/rest/v1/finance_target_assets`, { method: 'POST', headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' }, body: JSON.stringify({ ticker: tkrChave, setor_nome: setorDefinido, meta_group_percentual: pesoGrupo }) });
-    await fetch(`${SB_URL}/rest/v1/finance_target_assets?ticker=eq.${tkrChave}`, { method: 'PATCH', headers: SB_HDR, body: JSON.stringify({ setor_nome: setorDefinido, meta_group_percentual: pesoGrupo }) });
+
+    // Atualizar o ativo com o novo setor
+    await fetch(`${SB_URL}/rest/v1/finance_target_assets`, {
+      method: 'POST',
+      headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+      body: JSON.stringify({ ticker: tkrChave, setor_nome: setorDefinido, meta_group_percentual: pesoGrupo })
+    });
+
+    // Forçar atualização via PATCH
+    await fetch(`${SB_URL}/rest/v1/finance_target_assets?ticker=eq.${tkrChave}`, {
+      method: 'PATCH',
+      headers: SB_HDR,
+      body: JSON.stringify({ setor_nome: setorDefinido, meta_group_percentual: pesoGrupo })
+    });
+
+    // Atualizar estado local
+    setAtivosMeta(prev => ({
+      ...prev,
+      [tkrChave]: { setor: setorDefinido, metaGrupo: pesoGrupo }
+    }));
   };
 
   const salvarTicket = async (e) => {
     e.preventDefault();
     if (!modalTicker.trim() || !modalNome.trim()) return;
     const tkrChave = modalTicker.trim().toUpperCase();
-    const setorDefinido = modalSetorAuto || 'Outros / Não Classificado';
-    const pesoGrupoAtual = ativosMeta[tkrChave]?.metaGrupo;
+    const setorDefinido = modalSetorSelecionado || modalSetorAuto || 'Outros / Não Classificado';
+    const pesoGrupoAtual = ativosMeta[tkrChave]?.metaGrupo || 100;
+
     try {
       if (modalId) {
-        await fetch(`${SB_URL}/rest/v1/finance_tickets?id=eq.${modalId}`, { method: 'PATCH', headers: SB_HDR, body: JSON.stringify({ nome: modalNome }) });
+        await fetch(`${SB_URL}/rest/v1/finance_tickets?id=eq.${modalId}`, { 
+          method: 'PATCH', 
+          headers: SB_HDR, 
+          body: JSON.stringify({ nome: modalNome }) 
+        });
         await persistirSetorAtivo(tkrChave, setorDefinido, pesoGrupoAtual);
       } else {
-        await fetch(`${SB_URL}/rest/v1/finance_tickets`, { method: 'POST', headers: SB_HDR, body: JSON.stringify({ ticker: tkrChave, nome: modalNome, quantidade: 0, preco_custo: 0 }) });
+        await fetch(`${SB_URL}/rest/v1/finance_tickets`, { 
+          method: 'POST', 
+          headers: SB_HDR, 
+          body: JSON.stringify({ ticker: tkrChave, nome: modalNome, quantidade: 0, preco_custo: 0 }) 
+        });
         await persistirSetorAtivo(tkrChave, setorDefinido);
       }
       setIsModalOpen(false);
       await carregarDados();
-      showToast(`Ticker ${tkrChave} sincronizado no hub.`, 'success');
-    } catch (err) { showToast(err.message, 'error'); }
+      showToast(`Ticker ${tkrChave} sincronizado com setor: ${setorDefinido}`, 'success');
+    } catch (err) { 
+      showToast(err.message, 'error'); 
+    }
   };
 
   const excluirTicket = async (id, ticker) => {
@@ -220,6 +429,7 @@ export default function App() {
     } catch (err) { showToast(err.message, 'error'); }
   };
 
+  // ===== TRANSAÇÕES =====
   const abrirModalTransacao = (idOrdem = '', tickerPredefinido = '') => {
     if (idOrdem) {
       const txExistente = transacoes.find(t => t.id === idOrdem);
@@ -247,37 +457,50 @@ export default function App() {
     const prc = parseFloat(txPreco);
     const tkr = txTicker.toUpperCase();
     const dataIso = new Date(txData + 'T12:00:00').toISOString();
+    
     try {
       const setorInfo = ativosMeta[tkr]?.setor || '';
-      const bodyData = { ticker: tkr, tipo: txTipo, quantidade: qty, preco: prc, registrado_em: dataIso, setor: setorInfo };
+      const bodyData = { 
+        ticker: tkr, 
+        tipo: txTipo, 
+        quantidade: qty, 
+        preco: prc, 
+        registrado_em: dataIso,
+        setor: setorInfo
+      };
+
       if (txId) {
-        await fetch(`${SB_URL}/rest/v1/finance_transactions?id=eq.${txId}`, { method: 'PATCH', headers: SB_HDR, body: JSON.stringify(bodyData) });
+        await fetch(`${SB_URL}/rest/v1/finance_transactions?id=eq.${txId}`, {
+          method: 'PATCH',
+          headers: SB_HDR,
+          body: JSON.stringify(bodyData)
+        });
       } else {
-        await fetch(`${SB_URL}/rest/v1/finance_transactions`, { method: 'POST', headers: SB_HDR, body: JSON.stringify(bodyData) });
+        await fetch(`${SB_URL}/rest/v1/finance_transactions`, {
+          method: 'POST',
+          headers: SB_HDR,
+          body: JSON.stringify(bodyData)
+        });
       }
+
       setIsTxModalOpen(false);
-      const posicao = await recalcularPosicaoAtivo(tkr);
-      if (posicao) {
-        await fetch(`${SB_URL}/rest/v1/finance_tickets?ticker=eq.${tkr}`, { method: 'PATCH', headers: SB_HDR, body: JSON.stringify({ quantidade: posicao.quantidade_total || 0, preco_custo: posicao.preco_medio || 0 }) });
-      }
       await carregarDados();
       showToast('Ordem processada com sucesso!', 'success');
-    } catch (err) { showToast(err.message, 'error'); }
+    } catch (err) { 
+      showToast(err.message, 'error'); 
+    }
   };
 
   const excluirTransacao = async (id, ticker) => {
     if (!confirm('Deseja deletar este lançamento do extrato?')) return;
     try {
       await fetch(`${SB_URL}/rest/v1/finance_transactions?id=eq.${id}`, { method: 'DELETE', headers: SB_HDR });
-      const posicao = await recalcularPosicaoAtivo(ticker);
-      if (posicao) {
-        await fetch(`${SB_URL}/rest/v1/finance_tickets?ticker=eq.${ticker}`, { method: 'PATCH', headers: SB_HDR, body: JSON.stringify({ quantidade: posicao.quantidade_total || 0, preco_custo: posicao.preco_medio || 0 }) });
-      }
       await carregarDados();
       showToast('Lançamento removido permanentemente.');
     } catch (e) { showToast(e.message, 'error'); }
   };
 
+  // ===== VALUATIONS =====
   const abrirModalValuation = (ticker) => {
     setValTicker(ticker);
     setValMetodologia('bazin');
@@ -289,52 +512,131 @@ export default function App() {
   const salvarValuation = async (e) => {
     e.preventDefault();
     try {
-      await fetch(`${SB_URL}/rest/v1/finance_asset_valuation`, { method: 'POST', headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' }, body: JSON.stringify({ ticker: valTicker.toUpperCase(), metodologia: valMetodologia, preco_teto: parseFloat(valPrecoTeto), margem_seguranca: parseFloat(valMargem) || 0 }) });
+      await fetch(`${SB_URL}/rest/v1/finance_asset_valuation`, {
+        method: 'POST',
+        headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+        body: JSON.stringify({
+          ticker: valTicker.toUpperCase(),
+          metodologia: valMetodologia,
+          preco_teto: parseFloat(valPrecoTeto),
+          margem_seguranca: parseFloat(valMargem) || 0
+        })
+      });
       setIsValModalOpen(false);
       await carregarDados();
       showToast(`Preço teto ${valMetodologia} calculado para ${valTicker}`, 'success');
-    } catch (err) { showToast(err.message, 'error'); }
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
   };
 
+  // ===== METAS =====
   const adicionarSetor = async (e) => {
     e.preventDefault();
-    if (!novoSetorNome.trim() || !novoSetorMeta) return;
+    if (!novoSetorNome.trim()) return;
+    
     try {
-      await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, { method: 'POST', headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' }, body: JSON.stringify({ nome: novoSetorNome.trim(), meta_percentual: parseFloat(novoSetorMeta) }) });
+      const metaValue = parseFloat(novoSetorMeta) || 0;
+      
+      // Usar merge-duplicates para não perder metas existentes
+      await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
+        method: 'POST',
+        headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+        body: JSON.stringify({ nome: novoSetorNome.trim(), meta_percentual: metaValue })
+      });
+      
+      // Atualizar estado local mantendo as metas existentes
+      setSetoresMeta(prev => ({
+        ...prev,
+        [novoSetorNome.trim()]: metaValue
+      }));
+      
       setNovoSetorNome('');
       setNovoSetorMeta('');
       await carregarDados();
-      showToast('Novo setor acoplado ao ecossistema.', 'success');
-    } catch (err) { console.error(err); }
+      showToast('Novo setor adicionado com sucesso!', 'success');
+    } catch (err) { 
+      console.error(err);
+      showToast('Erro ao adicionar setor', 'error');
+    }
   };
 
   const atualizarSetorMetaBD = async (setor, valor) => {
     try {
-      await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, { method: 'POST', headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' }, body: JSON.stringify({ nome: setor, meta_percentual: parseFloat(valor) || 0 }) });
-      setSetoresMeta(p => ({ ...p, [setor]: parseFloat(valor) || 0 }));
-    } catch (err) { console.error(err); }
+      const novoValor = parseFloat(valor) || 0;
+      
+      await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
+        method: 'POST',
+        headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+        body: JSON.stringify({ nome: setor, meta_percentual: novoValor })
+      });
+      
+      setSetoresMeta(prev => ({
+        ...prev,
+        [setor]: novoValor
+      }));
+    } catch (err) { 
+      console.error(err);
+      showToast('Erro ao atualizar meta do setor', 'error');
+    }
   };
 
   const removerSetor = async (setor) => {
     if (!confirm(`Remover permanentemente o setor "${setor}"?`)) return;
     try {
       await fetch(`${SB_URL}/rest/v1/finance_target_sectors?nome=eq.${setor}`, { method: 'DELETE', headers: SB_HDR });
+      setSetoresMeta(prev => {
+        const newState = { ...prev };
+        delete newState[setor];
+        return newState;
+      });
       await carregarDados();
-    } catch (e) { console.error(e); }
+      showToast(`Setor ${setor} removido`, 'success');
+    } catch (e) { 
+      console.error(e);
+      showToast('Erro ao remover setor', 'error');
+    }
   };
 
   const vincularAtivoAoSetorBD = async (ticker, setor, metaGrupo) => {
     const tkr = ticker.toUpperCase();
     const mGrupo = parseFloat(metaGrupo) || 0;
     const setorFinal = setor || SETOR_PADRAO;
-    setAtivosMeta(p => ({ ...p, [tkr]: { setor: setorFinal, metaGrupo: mGrupo } }));
+    
     try {
-      await fetch(`${SB_URL}/rest/v1/finance_target_assets`, { method: 'POST', headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' }, body: JSON.stringify({ ticker: tkr, setor_nome: setorFinal, meta_group_percentual: mGrupo }) });
-      await fetch(`${SB_URL}/rest/v1/finance_target_assets?ticker=eq.${tkr}`, { method: 'PATCH', headers: SB_HDR, body: JSON.stringify({ setor_nome: setorFinal, meta_group_percentual: mGrupo }) });
-      showToast(`Setor de ${tkr} redefinido com sucesso!`);
-    } catch (e) { console.error(e); showToast("Erro ao salvar setor no banco de dados.", "error"); }
+      // Primeiro garantir que o setor existe
+      await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
+        method: 'POST',
+        headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+        body: JSON.stringify({ nome: setorFinal, meta_percentual: setoresMeta[setorFinal] || 0 })
+      });
+
+      await fetch(`${SB_URL}/rest/v1/finance_target_assets`, {
+        method: 'POST',
+        headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+        body: JSON.stringify({ ticker: tkr, setor_nome: setorFinal, meta_group_percentual: mGrupo })
+      });
+      
+      await fetch(`${SB_URL}/rest/v1/finance_target_assets?ticker=eq.${tkr}`, {
+        method: 'PATCH',
+        headers: SB_HDR,
+        body: JSON.stringify({ setor_nome: setorFinal, meta_group_percentual: mGrupo })
+      });
+      
+      // Atualizar estado local
+      setAtivosMeta(prev => ({
+        ...prev,
+        [tkr]: { setor: setorFinal, metaGrupo: mGrupo }
+      }));
+      
+      showToast(`Setor de ${tkr} atualizado para ${setorFinal}`, 'success');
+    } catch (e) { 
+      console.error(e); 
+      showToast("Erro ao salvar setor no banco de dados.", "error");
+    }
   };
 
+  // ===== MÉTRICAS =====
   const normalizarSetor = (valor) => {
     if (!valor || valor === 'Sem Setor' || valor === 'Sem Grupo') return SETOR_PADRAO;
     return valor;
@@ -349,68 +651,107 @@ export default function App() {
     }
   };
 
-  const totalPatrimonioReal = Array.isArray(tickets) ? tickets.reduce((acc, t) => {
-    if (!t) return acc;
-    const qtd = parseFloat(t.quantidade || 0);
-    const precoMedio = parseFloat(t.preco_custo || 0);
-    return acc + (qtd * precoMedio);
-  }, 0) : 0;
+  // ===== CÁLCULO DE PATRIMÔNIO =====
+  // Calcular patrimônio real baseado nas transações e preços atuais
+  const calcularPatrimonioReal = useCallback(() => {
+    let total = 0;
+    const ativosComPosicao = {};
+    
+    tickets.forEach(t => {
+      const tkr = t.ticker.toUpperCase();
+      const { quantidade, precoMedio } = calcularPrecoMedio(tkr);
+      if (quantidade > 0) {
+        const precoAtual = precosAtuais[tkr] || precoMedio;
+        const valor = quantidade * precoAtual;
+        total += valor;
+        ativosComPosicao[tkr] = { quantidade, precoMedio, precoAtual, valor };
+      }
+    });
+    
+    return { total, ativos: ativosComPosicao };
+  }, [tickets, transacoes, precosAtuais, calcularPrecoMedio]);
 
-  const getValuationsPorTicker = (ticker) => valuations.filter(v => v.ticker.toUpperCase() === ticker.toUpperCase());
+  const patrimonio = calcularPatrimonioReal();
+  const totalPatrimonioReal = patrimonio.total;
 
-  const getMetodologiaRecomendada = (setor) => {
-    const rule = sectorRules.find(r => r.setor === setor);
-    return rule?.metodologia_recomendada || 'Bazin';
-  };
-
+  // ===== RESUMO POR CATEGORIAS =====
   const resumoCategorias = (() => {
     const mapa = {};
-    Object.keys(setoresMeta).forEach(setor => { mapa[setor] = { setor, metaPct: setoresMeta[setor] || 0, realValor: 0 }; });
-    (Array.isArray(tickets) ? tickets : []).forEach(t => {
+
+    // Inicializar com todas as metas de setor
+    Object.keys(setoresMeta).forEach(setor => {
+      mapa[setor] = { setor, metaPct: setoresMeta[setor] || 0, realValor: 0 };
+    });
+
+    // Adicionar valores reais por setor
+    tickets.forEach(t => {
       if (!t) return;
       const tkr = t.ticker.toUpperCase();
-      const qtd = parseFloat(t.quantidade || 0);
-      const preco = parseFloat(t.preco_custo || 0);
-      const valorReal = qtd * preco;
-      const setor = normalizarSetor(ativosMeta[tkr]?.setor);
-      if (!mapa[setor]) mapa[setor] = { setor, metaPct: setoresMeta[setor] || 0, realValor: 0 };
-      mapa[setor].realValor += valorReal;
+      const posicao = patrimonio.ativos[tkr];
+      if (posicao && posicao.quantidade > 0) {
+        const setor = normalizarSetor(ativosMeta[tkr]?.setor);
+        if (!mapa[setor]) {
+          mapa[setor] = { setor, metaPct: setoresMeta[setor] || 0, realValor: 0 };
+        }
+        mapa[setor].realValor += posicao.valor;
+      }
     });
+
     return Object.values(mapa).sort((a, b) => b.metaPct - a.metaPct);
   })();
 
   const totalMetaPct = resumoCategorias.reduce((acc, c) => acc + c.metaPct, 0);
 
+  // ===== ATIVOS AGRUPADOS POR SETOR =====
   const ativosAgrupadosPorSetor = (() => {
     const grupos = {};
     Object.keys(setoresMeta).forEach(s => { grupos[s] = []; });
-    (Array.isArray(tickets) ? tickets : []).forEach(t => {
+
+    tickets.forEach(t => {
       if (!t) return;
       const tkr = t.ticker.toUpperCase();
       const info = ativosMeta[tkr] || { setor: '', metaGrupo: 0 };
       const setor = normalizarSetor(info.setor);
       if (!grupos[setor]) grupos[setor] = [];
-      grupos[setor].push({ ticket: t, metaGrupo: info.metaGrupo || 0 });
+      grupos[setor].push({ 
+        ticket: t, 
+        metaGrupo: info.metaGrupo || 0,
+        posicao: patrimonio.ativos[tkr] || { quantidade: 0, precoMedio: 0, precoAtual: 0, valor: 0 }
+      });
     });
+
     return grupos;
   })();
 
+  // ===== GRÁFICOS =====
   const prepararPizzaMetaPorCategoria = () => ({
     labels: resumoCategorias.map(c => c.setor),
-    datasets: [{ data: resumoCategorias.map(c => c.metaPct), backgroundColor: resumoCategorias.map((_, i) => corDaCategoria(i)), borderWidth: 0 }]
+    datasets: [{
+      data: resumoCategorias.map(c => c.metaPct),
+      backgroundColor: resumoCategorias.map((_, i) => corDaCategoria(i)),
+      borderWidth: 0
+    }]
   });
 
   const prepararPizzaRealPorCategoria = () => ({
     labels: resumoCategorias.map(c => c.setor),
-    datasets: [{ data: resumoCategorias.map(c => c.realValor), backgroundColor: resumoCategorias.map((_, i) => corDaCategoria(i)), borderWidth: 0 }]
+    datasets: [{
+      data: resumoCategorias.map(c => c.realValor),
+      backgroundColor: resumoCategorias.map((_, i) => corDaCategoria(i)),
+      borderWidth: 0
+    }]
   });
 
   const formatarValorExibicao = (categoria, campo) => {
     if (campo === 'meta') {
-      return modoValorGraficos === 'percentual' ? `${categoria.metaPct.toFixed(1)}%` : `R$ ${((categoria.metaPct / 100) * totalPatrimonioReal).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`;
+      return modoValorGraficos === 'percentual'
+        ? `${categoria.metaPct.toFixed(1)}%`
+        : `R$ ${((categoria.metaPct / 100) * totalPatrimonioReal).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`;
     }
     const realPct = totalPatrimonioReal > 0 ? (categoria.realValor / totalPatrimonioReal) * 100 : 0;
-    return modoValorGraficos === 'percentual' ? `${realPct.toFixed(1)}%` : `R$ ${categoria.realValor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`;
+    return modoValorGraficos === 'percentual'
+      ? `${realPct.toFixed(1)}%`
+      : `R$ ${categoria.realValor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`;
   };
 
   const calcularDeltaPP = (categoria) => {
@@ -419,7 +760,8 @@ export default function App() {
   };
 
   const opcoesPizzaPercentual = (titulo, tipo = 'meta') => ({
-    responsive: true, maintainAspectRatio: false,
+    responsive: true,
+    maintainAspectRatio: false,
     plugins: {
       legend: { display: false },
       title: { display: true, text: titulo, color: '#f8fafc', font: { size: 14, family: 'Plus Jakarta Sans', weight: '700' }, padding: { bottom: 10 } },
@@ -436,7 +778,8 @@ export default function App() {
     }
   });
 
-  const logsFinaisExibicao = Array.isArray(transacoes) ? transacoes.filter(log => {
+  // ===== GRÁFICO DE LINHA =====
+  const logsFinaisExibicao = Array.isArray(logsHistoricos) ? logsHistoricos.filter(log => {
     if (!log || !log.registrado_em) return false;
     const d = log.registrado_em.split('T')[0];
     return d >= dataInicio && d <= dataFim && (ativosSelecionados.length === 0 || ativosSelecionados.includes(log.ticker.toUpperCase()));
@@ -447,7 +790,9 @@ export default function App() {
       const d = new Date(l.registrado_em);
       return `${d.toLocaleDateString('pt-BR')} ${d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`;
     }))];
-    const tickersParaPlotar = ativosSelecionados.length > 0 ? ativosSelecionados : [...new Set(transacoes.map(l => l && l.ticker ? l.ticker.toUpperCase() : ''))].filter(Boolean);
+    
+    const tickersParaPlotar = ativosSelecionados.length > 0 ? ativosSelecionados : [...new Set(logsHistoricos.map(l => l && l.ticker ? l.ticker.toUpperCase() : ''))].filter(Boolean);
+    
     return {
       labels: todosOsHorarios,
       datasets: tickersParaPlotar.map((ticker, idx) => {
@@ -462,6 +807,22 @@ export default function App() {
     };
   };
 
+  // ===== FUNÇÃO PARA ATUALIZAR PREÇOS MANUALMENTE =====
+  const ejecutarCronVerificacao = async () => {
+    await atualizarPrecos();
+  };
+
+  // ===== GET VALUATIONS =====
+  const getValuationsPorTicker = (ticker) => {
+    return valuations.filter(v => v.ticker.toUpperCase() === ticker.toUpperCase());
+  };
+
+  const getMetodologiaRecomendada = (setor) => {
+    const rule = sectorRules.find(r => r.setor === setor);
+    return rule?.metodologia_recomendada || 'Bazin';
+  };
+
+  // ===== RENDER =====
   return (
     <div className="min-h-screen p-4 md:p-8 text-slate-200">
       {toast.show && (
@@ -482,7 +843,7 @@ export default function App() {
           <div>
             <div className="flex items-center gap-2">
               <h1 className="text-2xl font-extrabold bg-gradient-to-r from-blue-400 via-indigo-400 to-purple-400 bg-clip-text text-transparent tracking-tight">LogTicket</h1>
-              <span className="text-[10px] bg-blue-500/10 border border-blue-500/20 text-blue-400 font-mono px-1.5 py-0.5 rounded">v3.0</span>
+              <span className="text-[10px] bg-blue-500/10 border border-blue-500/20 text-blue-400 font-mono px-1.5 py-0.5 rounded">v3.1</span>
             </div>
             <p className="text-xs text-slate-400 mt-1 font-medium">Gestão Automatizada de Portfólio com Preço Teto</p>
             <div className="flex gap-1 mt-4 bg-slate-950 p-1 rounded-xl border border-slate-800/80 w-fit">
@@ -494,6 +855,11 @@ export default function App() {
         <div className="flex flex-wrap gap-2.5 w-full md:w-auto">
           <button onClick={() => abrirModalTransacao()} className="flex-1 md:flex-none px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold text-xs rounded-xl transition-all shadow-lg shadow-emerald-950/20 active:scale-[0.98]">💸 Registrar Ordem</button>
           <button onClick={() => { setModalId(''); setModalTicker(''); setModalNome(''); setModalSetorAuto(''); setIsModalOpen(true); }} className="flex-1 md:flex-none px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-slate-100 font-bold text-xs rounded-xl transition-all shadow-lg active:scale-[0.98]">➕ Novo Ticker</button>
+          <button onClick={ejecutarCronVerificacao} disabled={isCronRunning} className={`px-4 py-2.5 bg-slate-950 hover:bg-slate-900 border border-slate-800 text-xs font-bold font-mono text-slate-400 rounded-xl transition-all flex items-center gap-2 ${isCronRunning ? 'opacity-50 cursor-not-allowed' : ''}`}>
+            <span className={`w-1.5 h-1.5 rounded-full bg-blue-400 ${isCronRunning ? 'animate-ping' : ''}`} />
+            {isCronRunning ? 'Atualizando...' : '↻ Preços'}
+          </button>
+          <span className="text-[10px] text-slate-500 self-center font-mono">Última: {lastCheckTime}</span>
         </div>
       </header>
 
@@ -510,10 +876,18 @@ export default function App() {
             <div className="bg-slate-900/20 p-2 rounded-2xl border border-slate-900/60 space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="bg-slate-900/60 border border-slate-900/80 backdrop-blur-sm rounded-2xl p-6 h-72 shadow-lg">
-                  {resumoCategorias.length > 0 ? <Doughnut data={prepararPizzaMetaPorCategoria()} options={opcoesPizzaPercentual('Alocação Objetiva / Meta (%)', 'meta')} /> : <div className="text-xs text-slate-500 font-medium text-center pt-28">Configure as metas na aba superior para visualizar.</div>}
+                  {resumoCategorias.length > 0 ? (
+                    <Doughnut data={prepararPizzaMetaPorCategoria()} options={opcoesPizzaPercentual('Alocação Objetiva / Meta (%)', 'meta')} />
+                  ) : (
+                    <div className="text-xs text-slate-500 font-medium text-center pt-28">Configure as metas na aba superior para visualizar.</div>
+                  )}
                 </div>
                 <div className="bg-slate-900/60 border border-slate-900/80 backdrop-blur-sm rounded-2xl p-6 h-72 shadow-lg">
-                  {resumoCategorias.some(c => c.realValor > 0) ? <Doughnut data={prepararPizzaRealPorCategoria()} options={opcoesPizzaPercentual('Alocação Líquida Real (%)', 'real')} /> : <div className="text-xs text-slate-500 font-medium text-center pt-28">Lance compras no extrato para computar a distribuição real.</div>}
+                  {resumoCategorias.some(c => c.realValor > 0) ? (
+                    <Doughnut data={prepararPizzaRealPorCategoria()} options={opcoesPizzaPercentual('Alocação Líquida Real (%)', 'real')} />
+                  ) : (
+                    <div className="text-xs text-slate-500 font-medium text-center pt-28">Lance compras no extrato para computar a distribuição real.</div>
+                  )}
                 </div>
               </div>
 
@@ -563,10 +937,13 @@ export default function App() {
                 {tickets.map(t => {
                   if (!t) return null;
                   const tkr = t.ticker.toUpperCase();
-                  const qtdVal = parseFloat(t.quantidade || 0);
-                  const precoMedio = parseFloat(t.preco_custo || 0);
-                  const patrReal = qtdVal * precoMedio;
+                  const posicao = patrimonio.ativos[tkr] || { quantidade: 0, precoMedio: 0, precoAtual: 0, valor: 0 };
+                  const qtdVal = posicao.quantidade;
+                  const precoMedio = posicao.precoMedio;
+                  const precoAtual = posicao.precoAtual || precoMedio;
+                  const patrReal = posicao.valor;
                   const pctReal = totalPatrimonioReal > 0 ? (patrReal / totalPatrimonioReal) * 100 : 0;
+                  
                   const mAtivo = ativosMeta[tkr];
                   const setorPai = normalizarSetor(mAtivo?.setor);
                   const pctSetorAlvo = setoresMeta[setorPai] || 0;
@@ -617,6 +994,7 @@ export default function App() {
                         <div>
                           <span className="text-[10px] text-slate-500 font-semibold block uppercase tracking-wider">Custódia</span>
                           <span className="font-mono font-medium text-slate-300 mt-0.5 block">{qtdVal} un • R$ {precoMedio.toFixed(2)}</span>
+                          <span className="font-mono text-[10px] text-slate-500 block">Preço Atual: R$ {precoAtual.toFixed(2)}</span>
                         </div>
                         <div className="text-right">
                           <span className="text-[10px] text-slate-500 font-semibold block uppercase tracking-wider">Valorização</span>
@@ -674,8 +1052,8 @@ export default function App() {
                       <th className="p-4">Ativo</th>
                       <th className="p-4">Ação</th>
                       <th className="p-4">Volume</th>
-                      <th className="p-4">Custo Unitário</th>
-                      <th className="p-4">Preço Médio</th>
+                      <th className="p-4">Preço Unit.</th>
+                      <th className="p-4">Total</th>
                       <th className="p-4">Setor</th>
                       <th className="p-4 text-center">Ações</th>
                     </tr>
@@ -683,6 +1061,7 @@ export default function App() {
                   <tbody className="divide-y divide-slate-900/60 font-medium">
                     {transacoes.map(tx => {
                       if (!tx) return null;
+                      const total = parseFloat(tx.quantidade || 0) * parseFloat(tx.preco || 0);
                       return (
                         <tr key={tx.id} className="hover:bg-slate-900/30 transition-colors">
                           <td className="p-4 font-mono text-slate-400">{tx.registrado_em ? new Date(tx.registrado_em).toLocaleDateString('pt-BR') : '---'}</td>
@@ -690,7 +1069,7 @@ export default function App() {
                           <td className="p-4"><span className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold font-mono tracking-wide ${tx.tipo === 'COMPRA' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}`}>{tx.tipo}</span></td>
                           <td className="p-4 font-mono text-slate-300">{tx.quantidade} un</td>
                           <td className="p-4 font-mono text-slate-300">R$ {parseFloat(tx.preco || 0).toFixed(2)}</td>
-                          <td className="p-4 font-mono text-amber-400">R$ {parseFloat(tx.preco_medio || 0).toFixed(2)}</td>
+                          <td className="p-4 font-mono text-amber-400">R$ {total.toFixed(2)}</td>
                           <td className="p-4 text-slate-400">{tx.setor || '-'}</td>
                           <td className="p-4 text-center flex items-center justify-center gap-4">
                             <button onClick={() => abrirModalTransacao(tx.id)} className="text-blue-400 hover:text-blue-300 text-xs flex items-center gap-1 font-semibold transition-colors">✏️ Ajustar</button>
@@ -736,7 +1115,7 @@ export default function App() {
             </div>
 
             <div className="lg:col-span-2 bg-slate-900/40 border border-slate-900 p-6 rounded-2xl space-y-6 shadow-md">
-              <div><h3 className="text-sm font-bold text-slate-200">🔗 Distribuição e Pesos por Ativo</h3><p className="text-xs text-slate-400 mt-0.5">Organizado por categoria. Defina quanto cada ativo representa dentro do seu setor — não é obrigatório somar 100%, é apenas um guia.</p></div>
+              <div><h3 className="text-sm font-bold text-slate-200">🔗 Distribuição e Pesos por Ativo</h3><p className="text-xs text-slate-400 mt-0.5">Organizado por categoria. Defina quanto cada ativo representa dentro do seu setor.</p></div>
               <div className="space-y-4 max-h-[520px] overflow-y-auto pr-2">
                 {Object.entries(ativosAgrupadosPorSetor).map(([setor, itens]) => {
                   const somaPesos = itens.reduce((acc, i) => acc + (parseFloat(i.metaGrupo) || 0), 0);
@@ -749,8 +1128,8 @@ export default function App() {
                       </div>
                       {itens.length === 0 ? <p className="text-[11px] text-slate-600 italic">Nenhum ativo nesta categoria ainda.</p> : (
                         <div className="space-y-2">
-                          {itens.map(({ ticket: t, metaGrupo }) => (
-                            <div key={t.id} className="grid grid-cols-1 sm:grid-cols-3 gap-2 items-center bg-slate-900 p-2.5 rounded-lg border border-slate-800">
+                          {itens.map(({ ticket: t, metaGrupo, posicao }) => (
+                            <div key={t.id} className="grid grid-cols-1 sm:grid-cols-4 gap-2 items-center bg-slate-900 p-2.5 rounded-lg border border-slate-800">
                               <div><span className="text-xs font-bold text-blue-400 tracking-wider font-mono">{t.ticker.toUpperCase()}</span><p className="text-[10px] text-slate-500 font-medium line-clamp-1">{t.nome}</p></div>
                               <select value={setor} onChange={e => vincularAtivoAoSetorBD(t.ticker, e.target.value, metaGrupo)} className="w-full px-2 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-[11px] text-slate-300 font-medium focus:outline-none">
                                 {opcoesSetor.map(sNome => <option key={sNome} value={sNome}>{sNome}</option>)}
@@ -758,6 +1137,10 @@ export default function App() {
                               <div className="flex items-center gap-2">
                                 <input type="number" placeholder="Peso" value={metaGrupo} onChange={e => vincularAtivoAoSetorBD(t.ticker, setor, e.target.value)} className="w-full px-2 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-xs font-mono text-slate-300 focus:outline-none text-center" />
                                 <span className="text-[10px] text-slate-500 font-medium whitespace-nowrap">% do setor</span>
+                              </div>
+                              <div className="text-right">
+                                <span className="text-[9px] text-slate-500 block">Posição</span>
+                                <span className="text-[10px] font-mono text-emerald-400">{posicao?.quantidade || 0} un</span>
                               </div>
                             </div>
                           ))}
@@ -776,7 +1159,10 @@ export default function App() {
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
           <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl shadow-black animate-slide-up space-y-4">
-            <div className="flex justify-between items-start"><div><h3 className="text-sm font-bold text-white">{modalId ? 'Atualizar Identificação' : 'Acoplar Novo Ativo'}</h3><p className="text-xs text-slate-400 mt-0.5">Os metadados corporativos serão recuperados via Brapi.</p></div><button onClick={() => setIsModalOpen(false)} className="text-slate-500 hover:text-white text-xs">✕</button></div>
+            <div className="flex justify-between items-start">
+              <div><h3 className="text-sm font-bold text-white">{modalId ? 'Atualizar Identificação' : 'Acoplar Novo Ativo'}</h3><p className="text-xs text-slate-400 mt-0.5">Os metadados corporativos serão recuperados via Brapi.</p></div>
+              <button onClick={() => setIsModalOpen(false)} className="text-slate-500 hover:text-white text-xs">✕</button>
+            </div>
             <form onSubmit={salvarTicket} className="space-y-4">
               <div className="relative">
                 <label className="block text-[11px] text-slate-400 font-medium mb-1">Código do Ativo (Ticker)</label>
@@ -789,7 +1175,16 @@ export default function App() {
                 )}
               </div>
               <div><label className="block text-[11px] text-slate-400 font-medium mb-1">Razão Social / Nome Fantasia</label><input type="text" placeholder="Preenchimento automático" value={modalNome} onChange={e => setModalNome(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white font-medium focus:outline-none" /></div>
-              <div><label className="block text-[11px] text-slate-400 font-medium mb-1">Setor Identificado (Heurística)</label><input type="text" disabled value={modalSetorAuto || 'Aguardando ticker...'} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-500 font-medium focus:outline-none" /></div>
+              <div><label className="block text-[11px] text-slate-400 font-medium mb-1">Setor Identificado (Heurística)</label>
+                <select value={modalSetorSelecionado || modalSetorAuto || SETOR_PADRAO} onChange={e => setModalSetorSelecionado(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white font-medium focus:outline-none">
+                  {Object.keys(setoresMeta).length > 0 ? (
+                    Object.keys(setoresMeta).map(s => <option key={s} value={s}>{s}</option>)
+                  ) : (
+                    <option value={modalSetorAuto || SETOR_PADRAO}>{modalSetorAuto || SETOR_PADRAO}</option>
+                  )}
+                  <option value={SETOR_PADRAO}>{SETOR_PADRAO}</option>
+                </select>
+              </div>
               <div className="flex justify-end gap-2 pt-2">
                 <button type="button" onClick={() => setIsModalOpen(false)} className="px-4 py-2 bg-slate-950 hover:bg-slate-900 text-slate-400 text-xs font-bold rounded-xl border border-slate-800 transition-colors">Cancelar</button>
                 <button type="submit" className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-xl shadow-md transition-colors">Confirmar</button>
