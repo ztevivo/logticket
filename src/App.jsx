@@ -31,7 +31,6 @@ export default function App() {
   const [isCronRunning, setIsCronRunning] = useState(false);
   const [lastCheckTime, setLastCheckTime] = useState('Nunca verificado');
   
-  // Modal states
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalId, setModalId] = useState('');
   const [modalTicker, setModalTicker] = useState('');
@@ -66,8 +65,6 @@ export default function App() {
   const [novoSetorNome, setNovoSetorNome] = useState('');
   const [novoSetorMeta, setNovoSetorMeta] = useState('');
   const [modoValorGraficos, setModoValorGraficos] = useState('percentual');
-
-  // Estado para armazenar preços atuais dos ativos
   const [precosAtuais, setPrecosAtuais] = useState({});
 
   const showToast = (message, type = 'info') => {
@@ -75,7 +72,6 @@ export default function App() {
     setTimeout(() => setToast({ show: false, message: '', type: 'info' }), 4000);
   };
 
-  // ===== FUNÇÃO PARA CALCULAR PREÇO MÉDIO NO FRONT-END =====
   const calcularPrecoMedio = useCallback((ticker) => {
     const transacoesAtivo = transacoes
       .filter(tx => tx.ticker.toUpperCase() === ticker.toUpperCase())
@@ -108,7 +104,6 @@ export default function App() {
     return { quantidade, precoMedio, custoTotal };
   }, [transacoes]);
 
-  // ===== FUNÇÃO PARA BUSCAR PREÇOS ATUAIS DA BRAPI =====
   const buscarPrecosBrapi = useCallback(async (tickers) => {
     if (!tickers || tickers.length === 0) return {};
     
@@ -139,48 +134,61 @@ export default function App() {
     }
   }, []);
 
-  // ===== FUNÇÃO PARA ATUALIZAR PREÇOS =====
   const atualizarPrecos = useCallback(async () => {
-    if (!tickets || tickets.length === 0) return;
+    if (!tickets || tickets.length === 0) {
+      showToast('Nenhum ativo para atualizar', 'info');
+      return;
+    }
     
     setIsCronRunning(true);
     try {
       const tickers = tickets.map(t => t.ticker);
+      console.log(`Buscando preços para: ${tickers.join(', ')}`);
+      
       const precos = await buscarPrecosBrapi(tickers);
       
-      if (Object.keys(precos).length > 0) {
-        setPrecosAtuais(precos);
-        
-        // Salvar logs de preços
-        const logsNovos = [];
-        Object.entries(precos).forEach(([ticker, preco]) => {
-          logsNovos.push({
-            ticker: ticker,
-            preco: parseFloat(parseFloat(preco).toFixed(2)),
-            status: "Atualização Automática de Portfólio",
-            registrado_em: new Date().toISOString()
-          });
+      if (Object.keys(precos).length === 0) {
+        showToast('Nenhum preço obtido da Brapi', 'warning');
+        return;
+      }
+      
+      console.log(`Preços obtidos:`, precos);
+      setPrecosAtuais(precos);
+      
+      const logsNovos = [];
+      Object.entries(precos).forEach(([ticker, preco]) => {
+        logsNovos.push({
+          ticker: ticker,
+          preco: parseFloat(parseFloat(preco).toFixed(2)),
+          status: "Atualização Automática de Portfólio",
+          registrado_em: new Date().toISOString()
         });
+      });
 
-        if (logsNovos.length > 0) {
-          await fetch(`${SB_URL}/rest/v1/finance_price_logs`, { 
-            method: 'POST', 
-            headers: SB_HDR, 
-            body: JSON.stringify(logsNovos) 
-          });
+      if (logsNovos.length > 0) {
+        const response = await fetch(`${SB_URL}/rest/v1/finance_price_logs`, { 
+          method: 'POST', 
+          headers: SB_HDR, 
+          body: JSON.stringify(logsNovos) 
+        });
+        
+        if (!response.ok) {
+          throw new Error('Erro ao salvar logs de preços');
         }
         
-        setLastCheckTime(new Date().toLocaleTimeString('pt-BR'));
-        showToast(`Preços atualizados para ${Object.keys(precos).length} ativos`, 'success');
+        console.log(`${logsNovos.length} logs de preços salvos`);
       }
+      
+      setLastCheckTime(new Date().toLocaleTimeString('pt-BR'));
+      showToast(`✅ Preços atualizados para ${Object.keys(precos).length} ativos`, 'success');
     } catch (err) {
-      showToast('Erro ao atualizar preços: ' + err.message, 'error');
+      console.error('Erro ao atualizar preços:', err);
+      showToast('❌ Erro ao atualizar preços: ' + err.message, 'error');
     } finally {
       setIsCronRunning(false);
     }
   }, [tickets, buscarPrecosBrapi]);
 
-  // ===== CARREGAR DADOS =====
   const carregarDados = useCallback(async () => {
     setLoading(true);
     try {
@@ -222,7 +230,7 @@ export default function App() {
               if (a && a.ticker) {
                 mapeamentoAtivos[a.ticker.toUpperCase()] = { 
                   setor: a.setor_nome || 'Sem Setor', 
-                  metaGrupo: parseFloat(a.meta_group_percentual || 0) 
+                  metaGrupo: parseFloat(a.meta_grupo_percentual || 0) 
                 };
               }
             });
@@ -239,7 +247,6 @@ export default function App() {
       setAtivosMeta(mapeamentoAtivos);
       setLastCheckTime(new Date().toLocaleTimeString('pt-BR'));
 
-      // Buscar preços atuais
       if (dataTickets && dataTickets.length > 0) {
         const tickers = dataTickets.map(t => t.ticker);
         const precos = await buscarPrecosBrapi(tickers);
@@ -258,18 +265,26 @@ export default function App() {
     carregarDados(); 
   }, [carregarDados]);
 
-  // Atualizar preços a cada 15 minutos
   useEffect(() => {
-    const interval = setInterval(() => {
+    const initialTimeout = setTimeout(() => {
       if (tickets && tickets.length > 0) {
         atualizarPrecos();
       }
-    }, 900000); // 15 minutos
+    }, 5000);
 
-    return () => clearInterval(interval);
-  }, [tickets, atualizarPrecos]);
+    const interval = setInterval(() => {
+      if (tickets && tickets.length > 0 && !isCronRunning) {
+        console.log('⏰ Atualização automática de preços (15min)');
+        atualizarPrecos();
+      }
+    }, 900000);
 
-  // ===== SUGESTÕES DE TICKER =====
+    return () => {
+      clearTimeout(initialTimeout);
+      clearInterval(interval);
+    };
+  }, [tickets, atualizarPrecos, isCronRunning]);
+
   useEffect(() => {
     if (modalId || !modalTicker.trim() || modalTicker.trim().length < 2) {
       setSugestoes([]);
@@ -347,7 +362,6 @@ export default function App() {
     }
   };
 
-  // ===== EDIÇÃO DE TICKER =====
   const abrirModalEditarTicket = async (id, ticker, nomeAtual) => {
     setModalId(id);
     setModalTicker(ticker.toUpperCase());
@@ -358,64 +372,109 @@ export default function App() {
   };
 
   const persistirSetorAtivo = async (tkrChave, setorDefinido, pesoGrupoExistente = null) => {
-    // Primeiro, garantir que o setor existe na tabela de metas
-    await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
-      method: 'POST',
-      headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
-      body: JSON.stringify({ nome: setorDefinido, meta_percentual: setoresMeta[setorDefinido] || 0 })
-    });
+    try {
+      console.log(`Persistindo setor para ${tkrChave}: ${setorDefinido}`);
+      
+      const setorExistente = setoresMeta[setorDefinido];
+      const metaValue = setorExistente !== undefined ? setorExistente : 0;
+      
+      await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
+        method: 'POST',
+        headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+        body: JSON.stringify({ nome: setorDefinido, meta_percentual: metaValue })
+      });
 
-    const pesoGrupo = (pesoGrupoExistente !== null && pesoGrupoExistente !== undefined) ? pesoGrupoExistente : 100;
+      const pesoGrupo = (pesoGrupoExistente !== null && pesoGrupoExistente !== undefined) ? pesoGrupoExistente : 100;
 
-    // Atualizar o ativo com o novo setor
-    await fetch(`${SB_URL}/rest/v1/finance_target_assets`, {
-      method: 'POST',
-      headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
-      body: JSON.stringify({ ticker: tkrChave, setor_nome: setorDefinido, meta_group_percentual: pesoGrupo })
-    });
+      await fetch(`${SB_URL}/rest/v1/finance_target_assets`, {
+        method: 'POST',
+        headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+        body: JSON.stringify({ 
+          ticker: tkrChave, 
+          setor_nome: setorDefinido, 
+          meta_grupo_percentual: pesoGrupo 
+        })
+      });
 
-    // Forçar atualização via PATCH
-    await fetch(`${SB_URL}/rest/v1/finance_target_assets?ticker=eq.${tkrChave}`, {
-      method: 'PATCH',
-      headers: SB_HDR,
-      body: JSON.stringify({ setor_nome: setorDefinido, meta_group_percentual: pesoGrupo })
-    });
+      const patchResponse = await fetch(`${SB_URL}/rest/v1/finance_target_assets?ticker=eq.${tkrChave}`, {
+        method: 'PATCH',
+        headers: SB_HDR,
+        body: JSON.stringify({ 
+          setor_nome: setorDefinido, 
+          meta_grupo_percentual: pesoGrupo 
+        })
+      });
 
-    // Atualizar estado local
-    setAtivosMeta(prev => ({
-      ...prev,
-      [tkrChave]: { setor: setorDefinido, metaGrupo: pesoGrupo }
-    }));
+      if (!patchResponse.ok) {
+        const errorText = await patchResponse.text();
+        console.error('Erro no PATCH:', errorText);
+        throw new Error(`Erro ao atualizar setor: ${errorText}`);
+      }
+
+      setAtivosMeta(prev => ({
+        ...prev,
+        [tkrChave]: { setor: setorDefinido, metaGrupo: pesoGrupo }
+      }));
+
+      console.log(`Setor ${setorDefinido} persistido com sucesso para ${tkrChave}`);
+      return true;
+    } catch (error) {
+      console.error('Erro em persistirSetorAtivo:', error);
+      throw error;
+    }
   };
 
   const salvarTicket = async (e) => {
     e.preventDefault();
-    if (!modalTicker.trim() || !modalNome.trim()) return;
+    if (!modalTicker.trim() || !modalNome.trim()) {
+      showToast('Preencha todos os campos obrigatórios', 'error');
+      return;
+    }
+    
     const tkrChave = modalTicker.trim().toUpperCase();
-    const setorDefinido = modalSetorSelecionado || modalSetorAuto || 'Outros / Não Classificado';
+    const setorDefinido = modalSetorSelecionado || modalSetorAuto || SETOR_PADRAO;
     const pesoGrupoAtual = ativosMeta[tkrChave]?.metaGrupo || 100;
 
     try {
+      console.log(`Salvando ticket ${tkrChave} com setor: ${setorDefinido}`);
+      
       if (modalId) {
-        await fetch(`${SB_URL}/rest/v1/finance_tickets?id=eq.${modalId}`, { 
+        const updateResponse = await fetch(`${SB_URL}/rest/v1/finance_tickets?id=eq.${modalId}`, { 
           method: 'PATCH', 
           headers: SB_HDR, 
           body: JSON.stringify({ nome: modalNome }) 
         });
+        
+        if (!updateResponse.ok) {
+          throw new Error('Erro ao atualizar ticket');
+        }
+        
         await persistirSetorAtivo(tkrChave, setorDefinido, pesoGrupoAtual);
       } else {
-        await fetch(`${SB_URL}/rest/v1/finance_tickets`, { 
+        const createResponse = await fetch(`${SB_URL}/rest/v1/finance_tickets`, { 
           method: 'POST', 
           headers: SB_HDR, 
-          body: JSON.stringify({ ticker: tkrChave, nome: modalNome, quantidade: 0, preco_custo: 0 }) 
+          body: JSON.stringify({ 
+            ticker: tkrChave, 
+            nome: modalNome, 
+            quantidade: 0, 
+            preco_custo: 0 
+          }) 
         });
+        
+        if (!createResponse.ok) {
+          throw new Error('Erro ao criar ticket');
+        }
+        
         await persistirSetorAtivo(tkrChave, setorDefinido);
       }
+      
       setIsModalOpen(false);
       await carregarDados();
       showToast(`Ticker ${tkrChave} sincronizado com setor: ${setorDefinido}`, 'success');
     } catch (err) { 
-      showToast(err.message, 'error'); 
+      console.error('Erro em salvarTicket:', err);
+      showToast('Erro ao salvar: ' + err.message, 'error'); 
     }
   };
 
@@ -429,7 +488,6 @@ export default function App() {
     } catch (err) { showToast(err.message, 'error'); }
   };
 
-  // ===== TRANSAÇÕES =====
   const abrirModalTransacao = (idOrdem = '', tickerPredefinido = '') => {
     if (idOrdem) {
       const txExistente = transacoes.find(t => t.id === idOrdem);
@@ -500,7 +558,6 @@ export default function App() {
     } catch (e) { showToast(e.message, 'error'); }
   };
 
-  // ===== VALUATIONS =====
   const abrirModalValuation = (ticker) => {
     setValTicker(ticker);
     setValMetodologia('bazin');
@@ -530,7 +587,6 @@ export default function App() {
     }
   };
 
-  // ===== METAS =====
   const adicionarSetor = async (e) => {
     e.preventDefault();
     if (!novoSetorNome.trim()) return;
@@ -538,14 +594,12 @@ export default function App() {
     try {
       const metaValue = parseFloat(novoSetorMeta) || 0;
       
-      // Usar merge-duplicates para não perder metas existentes
       await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
         method: 'POST',
         headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
         body: JSON.stringify({ nome: novoSetorNome.trim(), meta_percentual: metaValue })
       });
       
-      // Atualizar estado local mantendo as metas existentes
       setSetoresMeta(prev => ({
         ...prev,
         [novoSetorNome.trim()]: metaValue
@@ -604,7 +658,6 @@ export default function App() {
     const setorFinal = setor || SETOR_PADRAO;
     
     try {
-      // Primeiro garantir que o setor existe
       await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
         method: 'POST',
         headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
@@ -614,16 +667,15 @@ export default function App() {
       await fetch(`${SB_URL}/rest/v1/finance_target_assets`, {
         method: 'POST',
         headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
-        body: JSON.stringify({ ticker: tkr, setor_nome: setorFinal, meta_group_percentual: mGrupo })
+        body: JSON.stringify({ ticker: tkr, setor_nome: setorFinal, meta_grupo_percentual: mGrupo })
       });
       
       await fetch(`${SB_URL}/rest/v1/finance_target_assets?ticker=eq.${tkr}`, {
         method: 'PATCH',
         headers: SB_HDR,
-        body: JSON.stringify({ setor_nome: setorFinal, meta_group_percentual: mGrupo })
+        body: JSON.stringify({ setor_nome: setorFinal, meta_grupo_percentual: mGrupo })
       });
       
-      // Atualizar estado local
       setAtivosMeta(prev => ({
         ...prev,
         [tkr]: { setor: setorFinal, metaGrupo: mGrupo }
@@ -636,7 +688,6 @@ export default function App() {
     }
   };
 
-  // ===== MÉTRICAS =====
   const normalizarSetor = (valor) => {
     if (!valor || valor === 'Sem Setor' || valor === 'Sem Grupo') return SETOR_PADRAO;
     return valor;
@@ -651,11 +702,9 @@ export default function App() {
     }
   };
 
-  // ===== CÁLCULO DE PATRIMÔNIO =====
-  // Calcular patrimônio real baseado nas transações e preços atuais
   const calcularPatrimonioReal = useCallback(() => {
     let total = 0;
-    const ativosComPosicao = {};
+    const ativos = {};
     
     tickets.forEach(t => {
       const tkr = t.ticker.toUpperCase();
@@ -664,26 +713,23 @@ export default function App() {
         const precoAtual = precosAtuais[tkr] || precoMedio;
         const valor = quantidade * precoAtual;
         total += valor;
-        ativosComPosicao[tkr] = { quantidade, precoMedio, precoAtual, valor };
+        ativos[tkr] = { quantidade, precoMedio, precoAtual, valor };
       }
     });
     
-    return { total, ativos: ativosComPosicao };
+    return { total, ativos };
   }, [tickets, transacoes, precosAtuais, calcularPrecoMedio]);
 
   const patrimonio = calcularPatrimonioReal();
   const totalPatrimonioReal = patrimonio.total;
 
-  // ===== RESUMO POR CATEGORIAS =====
   const resumoCategorias = (() => {
     const mapa = {};
 
-    // Inicializar com todas as metas de setor
     Object.keys(setoresMeta).forEach(setor => {
       mapa[setor] = { setor, metaPct: setoresMeta[setor] || 0, realValor: 0 };
     });
 
-    // Adicionar valores reais por setor
     tickets.forEach(t => {
       if (!t) return;
       const tkr = t.ticker.toUpperCase();
@@ -702,7 +748,6 @@ export default function App() {
 
   const totalMetaPct = resumoCategorias.reduce((acc, c) => acc + c.metaPct, 0);
 
-  // ===== ATIVOS AGRUPADOS POR SETOR =====
   const ativosAgrupadosPorSetor = (() => {
     const grupos = {};
     Object.keys(setoresMeta).forEach(s => { grupos[s] = []; });
@@ -723,7 +768,6 @@ export default function App() {
     return grupos;
   })();
 
-  // ===== GRÁFICOS =====
   const prepararPizzaMetaPorCategoria = () => ({
     labels: resumoCategorias.map(c => c.setor),
     datasets: [{
@@ -778,7 +822,6 @@ export default function App() {
     }
   });
 
-  // ===== GRÁFICO DE LINHA =====
   const logsFinaisExibicao = Array.isArray(logsHistoricos) ? logsHistoricos.filter(log => {
     if (!log || !log.registrado_em) return false;
     const d = log.registrado_em.split('T')[0];
@@ -807,12 +850,6 @@ export default function App() {
     };
   };
 
-  // ===== FUNÇÃO PARA ATUALIZAR PREÇOS MANUALMENTE =====
-  const ejecutarCronVerificacao = async () => {
-    await atualizarPrecos();
-  };
-
-  // ===== GET VALUATIONS =====
   const getValuationsPorTicker = (ticker) => {
     return valuations.filter(v => v.ticker.toUpperCase() === ticker.toUpperCase());
   };
@@ -822,7 +859,10 @@ export default function App() {
     return rule?.metodologia_recomendada || 'Bazin';
   };
 
-  // ===== RENDER =====
+  const ejecutarCronVerificacao = async () => {
+    await atualizarPrecos();
+  };
+
   return (
     <div className="min-h-screen p-4 md:p-8 text-slate-200">
       {toast.show && (
@@ -843,7 +883,7 @@ export default function App() {
           <div>
             <div className="flex items-center gap-2">
               <h1 className="text-2xl font-extrabold bg-gradient-to-r from-blue-400 via-indigo-400 to-purple-400 bg-clip-text text-transparent tracking-tight">LogTicket</h1>
-              <span className="text-[10px] bg-blue-500/10 border border-blue-500/20 text-blue-400 font-mono px-1.5 py-0.5 rounded">v3.1</span>
+              <span className="text-[10px] bg-blue-500/10 border border-blue-500/20 text-blue-400 font-mono px-1.5 py-0.5 rounded">v3.2</span>
             </div>
             <p className="text-xs text-slate-400 mt-1 font-medium">Gestão Automatizada de Portfólio com Preço Teto</p>
             <div className="flex gap-1 mt-4 bg-slate-950 p-1 rounded-xl border border-slate-800/80 w-fit">
@@ -856,10 +896,15 @@ export default function App() {
           <button onClick={() => abrirModalTransacao()} className="flex-1 md:flex-none px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold text-xs rounded-xl transition-all shadow-lg shadow-emerald-950/20 active:scale-[0.98]">💸 Registrar Ordem</button>
           <button onClick={() => { setModalId(''); setModalTicker(''); setModalNome(''); setModalSetorAuto(''); setIsModalOpen(true); }} className="flex-1 md:flex-none px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-slate-100 font-bold text-xs rounded-xl transition-all shadow-lg active:scale-[0.98]">➕ Novo Ticker</button>
           <button onClick={ejecutarCronVerificacao} disabled={isCronRunning} className={`px-4 py-2.5 bg-slate-950 hover:bg-slate-900 border border-slate-800 text-xs font-bold font-mono text-slate-400 rounded-xl transition-all flex items-center gap-2 ${isCronRunning ? 'opacity-50 cursor-not-allowed' : ''}`}>
-            <span className={`w-1.5 h-1.5 rounded-full bg-blue-400 ${isCronRunning ? 'animate-ping' : ''}`} />
+            <span className={`w-1.5 h-1.5 rounded-full ${isCronRunning ? 'animate-ping bg-blue-400' : 'bg-emerald-400'}`} />
             {isCronRunning ? 'Atualizando...' : '↻ Preços'}
           </button>
-          <span className="text-[10px] text-slate-500 self-center font-mono">Última: {lastCheckTime}</span>
+          <span className="text-[10px] text-slate-500 font-mono self-center">
+            Última: {lastCheckTime}
+          </span>
+          <span className="text-[9px] text-slate-600 font-mono self-center">
+            ⏱️ {isCronRunning ? '...' : '15min'}
+          </span>
         </div>
       </header>
 
@@ -1004,6 +1049,96 @@ export default function App() {
                     </div>
                   );
                 })}
+              </div>
+            </div>
+
+            {/* GRID DE PREÇOS TETO */}
+            <div className="mt-6 bg-slate-900/40 border border-slate-900 rounded-2xl overflow-hidden shadow-xl">
+              <div className="p-4 bg-slate-900/50 border-b border-slate-900 flex justify-between items-center">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">📊 Preços Teto por Ativo</h3>
+                <button 
+                  onClick={() => actualizarPrecos()} 
+                  disabled={isCronRunning}
+                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-bold rounded-lg transition-all flex items-center gap-2"
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${isCronRunning ? 'animate-ping bg-blue-400' : 'bg-emerald-400'}`} />
+                  {isCronRunning ? 'Atualizando...' : 'Atualizar Preços'}
+                </button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="bg-slate-950 text-slate-400 border-b border-slate-900 font-mono text-[10px]">
+                      <th className="p-3">Ticker</th>
+                      <th className="p-3">Setor</th>
+                      <th className="p-3">Preço Atual</th>
+                      <th className="p-3">Preço Médio</th>
+                      <th className="p-3 text-purple-400">Bazin</th>
+                      <th className="p-3 text-blue-400">Gordon</th>
+                      <th className="p-3 text-emerald-400">Graham</th>
+                      <th className="p-3 text-amber-400">Barsi</th>
+                      <th className="p-3 text-pink-400">Fluxo Caixa</th>
+                      <th className="p-3 text-cyan-400">Recomendado</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-900/60">
+                    {tickets.map(t => {
+                      if (!t) return null;
+                      const tkr = t.ticker.toUpperCase();
+                      const posicao = patrimonio.ativos[tkr] || { quantidade: 0, precoMedio: 0, precoAtual: 0 };
+                      const setorPai = normalizarSetor(ativosMeta[tkr]?.setor);
+                      const valuationsAtivo = getValuationsPorTicker(tkr);
+                      const metodoRecomendado = getMetodologiaRecomendada(setorPai);
+                      
+                      const valMap = {};
+                      valuationsAtivo.forEach(v => {
+                        valMap[v.metodologia] = parseFloat(v.preco_teto || 0);
+                      });
+
+                      const precoAtual = posicao.precoAtual || parseFloat(t.preco_custo || 0);
+                      
+                      return (
+                        <tr key={t.id} className="hover:bg-slate-900/30 transition-colors">
+                          <td className="p-3 font-bold text-blue-400 font-mono tracking-wider">{tkr}</td>
+                          <td className="p-3 text-slate-400">{setorPai}</td>
+                          <td className="p-3 font-mono">
+                            <span className={precoAtual > 0 ? 'text-emerald-400' : 'text-slate-500'}>
+                              R$ {precoAtual.toFixed(2)}
+                            </span>
+                          </td>
+                          <td className="p-3 font-mono text-amber-400">R$ {posicao.precoMedio.toFixed(2)}</td>
+                          <td className="p-3 font-mono text-purple-400">
+                            {valMap['bazin'] ? `R$ ${valMap['bazin'].toFixed(2)}` : '-'}
+                          </td>
+                          <td className="p-3 font-mono text-blue-400">
+                            {valMap['gordon'] ? `R$ ${valMap['gordon'].toFixed(2)}` : '-'}
+                          </td>
+                          <td className="p-3 font-mono text-emerald-400">
+                            {valMap['graham'] ? `R$ ${valMap['graham'].toFixed(2)}` : '-'}
+                          </td>
+                          <td className="p-3 font-mono text-amber-400">
+                            {valMap['barsi'] ? `R$ ${valMap['barsi'].toFixed(2)}` : '-'}
+                          </td>
+                          <td className="p-3 font-mono text-pink-400">
+                            {valMap['fluxo_caixa'] ? `R$ ${valMap['fluxo_caixa'].toFixed(2)}` : '-'}
+                          </td>
+                          <td className="p-3">
+                            <span className="px-2 py-1 bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 rounded-lg text-[10px] font-mono font-bold">
+                              {metodoRecomendado}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {tickets.length === 0 && (
+                      <tr>
+                        <td colSpan="10" className="p-8 text-center text-xs text-slate-500 font-medium">
+                          Nenhum ativo cadastrado. Adicione um ticker para visualizar os preços teto.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
               </div>
             </div>
 
@@ -1175,15 +1310,27 @@ export default function App() {
                 )}
               </div>
               <div><label className="block text-[11px] text-slate-400 font-medium mb-1">Razão Social / Nome Fantasia</label><input type="text" placeholder="Preenchimento automático" value={modalNome} onChange={e => setModalNome(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white font-medium focus:outline-none" /></div>
-              <div><label className="block text-[11px] text-slate-400 font-medium mb-1">Setor Identificado (Heurística)</label>
-                <select value={modalSetorSelecionado || modalSetorAuto || SETOR_PADRAO} onChange={e => setModalSetorSelecionado(e.target.value)} className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white font-medium focus:outline-none">
+              <div>
+                <label className="block text-[11px] text-slate-400 font-medium mb-1">Setor do Ativo</label>
+                <select 
+                  value={modalSetorSelecionado || modalSetorAuto || SETOR_PADRAO} 
+                  onChange={e => setModalSetorSelecionado(e.target.value)} 
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white font-medium focus:outline-none focus:border-blue-500"
+                >
                   {Object.keys(setoresMeta).length > 0 ? (
-                    Object.keys(setoresMeta).map(s => <option key={s} value={s}>{s}</option>)
+                    Object.keys(setoresMeta).map(s => (
+                      <option key={s} value={s}>{s}</option>
+                    ))
                   ) : (
                     <option value={modalSetorAuto || SETOR_PADRAO}>{modalSetorAuto || SETOR_PADRAO}</option>
                   )}
                   <option value={SETOR_PADRAO}>{SETOR_PADRAO}</option>
                 </select>
+                {modalSetorAuto && modalSetorAuto !== modalSetorSelecionado && (
+                  <p className="text-[9px] text-slate-500 mt-1">
+                    🔍 Detectado: {modalSetorAuto} {modalSetorSelecionado && '• Selecionado: ' + modalSetorSelecionado}
+                  </p>
+                )}
               </div>
               <div className="flex justify-end gap-2 pt-2">
                 <button type="button" onClick={() => setIsModalOpen(false)} className="px-4 py-2 bg-slate-950 hover:bg-slate-900 text-slate-400 text-xs font-bold rounded-xl border border-slate-800 transition-colors">Cancelar</button>
