@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler, ArcElement } from 'chart.js';
 import { Line, Doughnut } from 'react-chartjs-2';
 
@@ -30,6 +30,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [isCronRunning, setIsCronRunning] = useState(false);
   const [lastCheckTime, setLastCheckTime] = useState('Nunca verificado');
+  const [nextUpdateTime, setNextUpdateTime] = useState('');
   
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalId, setModalId] = useState('');
@@ -66,12 +67,14 @@ export default function App() {
   const [novoSetorMeta, setNovoSetorMeta] = useState('');
   const [modoValorGraficos, setModoValorGraficos] = useState('percentual');
   const [precosAtuais, setPrecosAtuais] = useState({});
+  const [ultimaAtualizacao, setUltimaAtualizacao] = useState(null);
 
   const showToast = (message, type = 'info') => {
     setToast({ show: true, message, type });
     setTimeout(() => setToast({ show: false, message: '', type: 'info' }), 4000);
   };
 
+  // ===== CÁLCULO DE PREÇO MÉDIO =====
   const calcularPrecoMedio = useCallback((ticker) => {
     const transacoesAtivo = transacoes
       .filter(tx => tx.ticker.toUpperCase() === ticker.toUpperCase())
@@ -104,6 +107,7 @@ export default function App() {
     return { quantidade, precoMedio, custoTotal };
   }, [transacoes]);
 
+  // ===== BUSCAR PREÇOS DA BRAPI =====
   const buscarPrecosBrapi = useCallback(async (tickers) => {
     if (!tickers || tickers.length === 0) return {};
     
@@ -113,91 +117,117 @@ export default function App() {
         return tk.endsWith('.SA') ? tk : `${tk}.SA`;
       }).join(',');
 
+      console.log(`🔍 Buscando preços para: ${listaTickers}`);
+      
       const response = await fetch(`https://brapi.dev/api/quote/${listaTickers}?token=${BRAPI_TOKEN}`);
-      if (response.ok) {
-        const dados = await response.json();
-        const precos = {};
-        if (dados && dados.results) {
-          dados.results.forEach(ativo => {
-            if (ativo && ativo.symbol && ativo.regularMarketPrice !== undefined) {
-              const chaveLimpa = ativo.symbol.toUpperCase().replace('.SA', '').trim();
-              precos[chaveLimpa] = parseFloat(ativo.regularMarketPrice);
-            }
-          });
-        }
-        return precos;
+      
+      if (!response.ok) {
+        console.error(`❌ Erro na Brapi: ${response.status}`);
+        return {};
       }
-      return {};
+      
+      const dados = await response.json();
+      const precos = {};
+      
+      if (dados && dados.results) {
+        dados.results.forEach(ativo => {
+          if (ativo && ativo.symbol && ativo.regularMarketPrice !== undefined) {
+            const chaveLimpa = ativo.symbol.toUpperCase().replace('.SA', '').trim();
+            precos[chaveLimpa] = parseFloat(ativo.regularMarketPrice);
+            console.log(`✅ ${chaveLimpa}: R$ ${precos[chaveLimpa]}`);
+          }
+        });
+      }
+      
+      return precos;
     } catch (error) {
-      console.error('Erro ao buscar preços da Brapi:', error);
+      console.error('❌ Erro ao buscar preços da Brapi:', error);
       return {};
     }
   }, []);
 
+  // ===== ATUALIZAR PREÇOS =====
   const atualizarPrecos = useCallback(async () => {
     if (!tickets || tickets.length === 0) {
       showToast('Nenhum ativo para atualizar', 'info');
       return;
     }
     
+    if (isCronRunning) {
+      console.log('⏳ Atualização já em andamento...');
+      return;
+    }
+    
     setIsCronRunning(true);
     try {
       const tickers = tickets.map(t => t.ticker);
-      console.log(`Buscando preços para: ${tickers.join(', ')}`);
+      console.log(`🚀 Iniciando atualização de preços para ${tickers.length} ativos...`);
       
       const precos = await buscarPrecosBrapi(tickers);
       
       if (Object.keys(precos).length === 0) {
-        showToast('Nenhum preço obtido da Brapi', 'warning');
+        showToast('⚠️ Nenhum preço obtido da Brapi', 'warning');
         return;
       }
       
-      console.log(`Preços obtidos:`, precos);
       setPrecosAtuais(precos);
+      setUltimaAtualizacao(new Date());
+      setLastCheckTime(new Date().toLocaleTimeString('pt-BR'));
       
+      // Salvar logs de preços no Supabase
       const logsNovos = [];
       Object.entries(precos).forEach(([ticker, preco]) => {
-        logsNovos.push({
-          ticker: ticker,
-          preco: parseFloat(parseFloat(preco).toFixed(2)),
-          status: "Atualização Automática de Portfólio",
-          registrado_em: new Date().toISOString()
-        });
+        if (preco > 0) {
+          logsNovos.push({
+            ticker: ticker,
+            preco: parseFloat(preco.toFixed(2)),
+            status: "Atualização Automática",
+            registrado_em: new Date().toISOString()
+          });
+        }
       });
 
       if (logsNovos.length > 0) {
-        const response = await fetch(`${SB_URL}/rest/v1/finance_price_logs`, { 
-          method: 'POST', 
-          headers: SB_HDR, 
-          body: JSON.stringify(logsNovos) 
-        });
+        console.log(`💾 Salvando ${logsNovos.length} logs de preços...`);
         
-        if (!response.ok) {
-          throw new Error('Erro ao salvar logs de preços');
+        // Salvar em lotes de 50 para evitar timeout
+        for (let i = 0; i < logsNovos.length; i += 50) {
+          const batch = logsNovos.slice(i, i + 50);
+          const response = await fetch(`${SB_URL}/rest/v1/finance_price_logs`, { 
+            method: 'POST', 
+            headers: SB_HDR, 
+            body: JSON.stringify(batch) 
+          });
+          
+          if (!response.ok) {
+            throw new Error(`Erro ao salvar lote ${i/50 + 1}: ${response.status}`);
+          }
         }
         
-        console.log(`${logsNovos.length} logs de preços salvos`);
+        console.log(`✅ ${logsNovos.length} logs salvos com sucesso!`);
       }
       
-      setLastCheckTime(new Date().toLocaleTimeString('pt-BR'));
       showToast(`✅ Preços atualizados para ${Object.keys(precos).length} ativos`, 'success');
     } catch (err) {
-      console.error('Erro ao atualizar preços:', err);
+      console.error('❌ Erro ao atualizar preços:', err);
       showToast('❌ Erro ao atualizar preços: ' + err.message, 'error');
     } finally {
       setIsCronRunning(false);
     }
-  }, [tickets, buscarPrecosBrapi]);
+  }, [tickets, buscarPrecosBrapi, isCronRunning]);
 
+  // ===== CARREGAR DADOS =====
   const carregarDados = useCallback(async () => {
     setLoading(true);
     try {
+      console.log('📥 Carregando dados...');
+      
       const [resTickets, resTx, resVal, resRules, resLogs] = await Promise.all([
         fetch(`${SB_URL}/rest/v1/finance_tickets?order=ticker.asc`, { method: 'GET', headers: SB_HDR }),
         fetch(`${SB_URL}/rest/v1/finance_transactions?order=registrado_em.desc`, { method: 'GET', headers: SB_HDR }),
         fetch(`${SB_URL}/rest/v1/finance_asset_valuation?order=ticker.asc`, { method: 'GET', headers: SB_HDR }),
         fetch(`${SB_URL}/rest/v1/finance_sector_rules`, { method: 'GET', headers: SB_HDR }),
-        fetch(`${SB_URL}/rest/v1/finance_price_logs?order=registrado_em.desc&limit=1000`, { method: 'GET', headers: SB_HDR })
+        fetch(`${SB_URL}/rest/v1/finance_price_logs?order=registrado_em.desc&limit=500`, { method: 'GET', headers: SB_HDR })
       ]);
       
       const dataTickets = await resTickets.json();
@@ -206,6 +236,7 @@ export default function App() {
       const dataRules = await resRules.json();
       const dataLogs = await resLogs.json();
 
+      // Carregar metas de setores
       let mapeamentoSetores = {};
       let mapeamentoAtivos = {};
       
@@ -245,46 +276,72 @@ export default function App() {
       setLogsHistoricos(Array.isArray(dataLogs) ? dataLogs : []);
       setSetoresMeta(mapeamentoSetores);
       setAtivosMeta(mapeamentoAtivos);
-      setLastCheckTime(new Date().toLocaleTimeString('pt-BR'));
+      
+      console.log(`✅ Dados carregados: ${dataTickets.length} tickets, ${dataTx.length} transações`);
 
+      // Buscar preços atuais imediatamente
       if (dataTickets && dataTickets.length > 0) {
         const tickers = dataTickets.map(t => t.ticker);
         const precos = await buscarPrecosBrapi(tickers);
-        setPrecosAtuais(precos);
+        if (Object.keys(precos).length > 0) {
+          setPrecosAtuais(precos);
+          setUltimaAtualizacao(new Date());
+          setLastCheckTime(new Date().toLocaleTimeString('pt-BR'));
+          console.log(`✅ ${Object.keys(precos).length} preços carregados`);
+        }
       }
 
     } catch (err) {
-      console.error(err);
+      console.error('❌ Erro ao carregar dados:', err);
       showToast("Erro na sincronização: " + err.message, 'error');
     } finally {
       setLoading(false);
     }
   }, [buscarPrecosBrapi]);
 
+  // ===== INICIALIZAÇÃO =====
   useEffect(() => { 
     carregarDados(); 
   }, [carregarDados]);
 
+  // ===== CRONÔMETRO DE ATUALIZAÇÃO =====
   useEffect(() => {
+    // Primeira atualização após 3 segundos
     const initialTimeout = setTimeout(() => {
-      if (tickets && tickets.length > 0) {
+      if (tickets && tickets.length > 0 && !isCronRunning) {
+        console.log('⏰ Primeira atualização automática');
         atualizarPrecos();
       }
-    }, 5000);
+    }, 3000);
 
+    // Atualizar a cada 15 minutos
     const interval = setInterval(() => {
       if (tickets && tickets.length > 0 && !isCronRunning) {
-        console.log('⏰ Atualização automática de preços (15min)');
+        console.log('⏰ Atualização automática programada (15min)');
         atualizarPrecos();
       }
     }, 900000);
 
+    // Atualizar indicador de próxima atualização
+    const updateTimer = setInterval(() => {
+      if (ultimaAtualizacao) {
+        const nextUpdate = new Date(ultimaAtualizacao.getTime() + 900000);
+        const now = new Date();
+        const diff = Math.max(0, Math.floor((nextUpdate - now) / 60000));
+        setNextUpdateTime(`${diff}min`);
+      } else {
+        setNextUpdateTime('aguardando...');
+      }
+    }, 60000);
+
     return () => {
       clearTimeout(initialTimeout);
       clearInterval(interval);
+      clearInterval(updateTimer);
     };
-  }, [tickets, atualizarPrecos, isCronRunning]);
+  }, [tickets, atualizarPrecos, isCronRunning, ultimaAtualizacao]);
 
+  // ===== SUGESTÕES DE TICKER =====
   useEffect(() => {
     if (modalId || !modalTicker.trim() || modalTicker.trim().length < 2) {
       setSugestoes([]);
@@ -367,6 +424,7 @@ export default function App() {
     setModalTicker(ticker.toUpperCase());
     setModalNome(nomeAtual);
     setModalSetorAuto('');
+    setModalSetorSelecionado('');
     setIsModalOpen(true);
     await selecionarSugestao(ticker);
   };
@@ -702,7 +760,8 @@ export default function App() {
     }
   };
 
-  const calcularPatrimonioReal = useCallback(() => {
+  // ===== CÁLCULO DE PATRIMÔNIO =====
+  const patrimonio = useMemo(() => {
     let total = 0;
     const ativos = {};
     
@@ -718,12 +777,12 @@ export default function App() {
     });
     
     return { total, ativos };
-  }, [tickets, transacoes, precosAtuais, calcularPrecoMedio]);
+  }, [tickets, calcularPrecoMedio, precosAtuais]);
 
-  const patrimonio = calcularPatrimonioReal();
   const totalPatrimonioReal = patrimonio.total;
 
-  const resumoCategorias = (() => {
+  // ===== RESUMO POR CATEGORIAS =====
+  const resumoCategorias = useMemo(() => {
     const mapa = {};
 
     Object.keys(setoresMeta).forEach(setor => {
@@ -744,11 +803,11 @@ export default function App() {
     });
 
     return Object.values(mapa).sort((a, b) => b.metaPct - a.metaPct);
-  })();
+  }, [setoresMeta, tickets, patrimonio.ativos, ativosMeta]);
 
   const totalMetaPct = resumoCategorias.reduce((acc, c) => acc + c.metaPct, 0);
 
-  const ativosAgrupadosPorSetor = (() => {
+  const ativosAgrupadosPorSetor = useMemo(() => {
     const grupos = {};
     Object.keys(setoresMeta).forEach(s => { grupos[s] = []; });
 
@@ -766,25 +825,26 @@ export default function App() {
     });
 
     return grupos;
-  })();
+  }, [setoresMeta, tickets, ativosMeta, patrimonio.ativos]);
 
-  const prepararPizzaMetaPorCategoria = () => ({
+  // ===== GRÁFICOS =====
+  const prepararPizzaMetaPorCategoria = useMemo(() => ({
     labels: resumoCategorias.map(c => c.setor),
     datasets: [{
       data: resumoCategorias.map(c => c.metaPct),
       backgroundColor: resumoCategorias.map((_, i) => corDaCategoria(i)),
       borderWidth: 0
     }]
-  });
+  }), [resumoCategorias]);
 
-  const prepararPizzaRealPorCategoria = () => ({
+  const prepararPizzaRealPorCategoria = useMemo(() => ({
     labels: resumoCategorias.map(c => c.setor),
     datasets: [{
       data: resumoCategorias.map(c => c.realValor),
       backgroundColor: resumoCategorias.map((_, i) => corDaCategoria(i)),
       borderWidth: 0
     }]
-  });
+  }), [resumoCategorias]);
 
   const formatarValorExibicao = (categoria, campo) => {
     if (campo === 'meta') {
@@ -822,13 +882,15 @@ export default function App() {
     }
   });
 
-  const logsFinaisExibicao = Array.isArray(logsHistoricos) ? logsHistoricos.filter(log => {
-    if (!log || !log.registrado_em) return false;
-    const d = log.registrado_em.split('T')[0];
-    return d >= dataInicio && d <= dataFim && (ativosSelecionados.length === 0 || ativosSelecionados.includes(log.ticker.toUpperCase()));
-  }) : [];
+  const logsFinaisExibicao = useMemo(() => {
+    return Array.isArray(logsHistoricos) ? logsHistoricos.filter(log => {
+      if (!log || !log.registrado_em) return false;
+      const d = log.registrado_em.split('T')[0];
+      return d >= dataInicio && d <= dataFim && (ativosSelecionados.length === 0 || ativosSelecionados.includes(log.ticker.toUpperCase()));
+    }) : [];
+  }, [logsHistoricos, dataInicio, dataFim, ativosSelecionados]);
 
-  const prepararDadosGraficoLinha = () => {
+  const prepararDadosGraficoLinha = useMemo(() => {
     const todosOsHorarios = [...new Set(logsFinaisExibicao.map(l => {
       const d = new Date(l.registrado_em);
       return `${d.toLocaleDateString('pt-BR')} ${d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`;
@@ -848,7 +910,7 @@ export default function App() {
         };
       }).filter(dataset => dataset.data.length > 0)
     };
-  };
+  }, [logsFinaisExibicao, ativosSelecionados, logsHistoricos]);
 
   const getValuationsPorTicker = (ticker) => {
     return valuations.filter(v => v.ticker.toUpperCase() === ticker.toUpperCase());
@@ -883,7 +945,7 @@ export default function App() {
           <div>
             <div className="flex items-center gap-2">
               <h1 className="text-2xl font-extrabold bg-gradient-to-r from-blue-400 via-indigo-400 to-purple-400 bg-clip-text text-transparent tracking-tight">LogTicket</h1>
-              <span className="text-[10px] bg-blue-500/10 border border-blue-500/20 text-blue-400 font-mono px-1.5 py-0.5 rounded">v3.2</span>
+              <span className="text-[10px] bg-blue-500/10 border border-blue-500/20 text-blue-400 font-mono px-1.5 py-0.5 rounded">v3.3</span>
             </div>
             <p className="text-xs text-slate-400 mt-1 font-medium">Gestão Automatizada de Portfólio com Preço Teto</p>
             <div className="flex gap-1 mt-4 bg-slate-950 p-1 rounded-xl border border-slate-800/80 w-fit">
@@ -903,7 +965,7 @@ export default function App() {
             Última: {lastCheckTime}
           </span>
           <span className="text-[9px] text-slate-600 font-mono self-center">
-            ⏱️ {isCronRunning ? '...' : '15min'}
+            ⏱️ {nextUpdateTime || '15min'}
           </span>
         </div>
       </header>
@@ -921,15 +983,15 @@ export default function App() {
             <div className="bg-slate-900/20 p-2 rounded-2xl border border-slate-900/60 space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="bg-slate-900/60 border border-slate-900/80 backdrop-blur-sm rounded-2xl p-6 h-72 shadow-lg">
-                  {resumoCategorias.length > 0 ? (
-                    <Doughnut data={prepararPizzaMetaPorCategoria()} options={opcoesPizzaPercentual('Alocação Objetiva / Meta (%)', 'meta')} />
+                  {resumoCategorias.length > 0 && resumoCategorias.some(c => c.metaPct > 0) ? (
+                    <Doughnut data={prepararPizzaMetaPorCategoria} options={opcoesPizzaPercentual('Alocação Objetiva / Meta (%)', 'meta')} />
                   ) : (
                     <div className="text-xs text-slate-500 font-medium text-center pt-28">Configure as metas na aba superior para visualizar.</div>
                   )}
                 </div>
                 <div className="bg-slate-900/60 border border-slate-900/80 backdrop-blur-sm rounded-2xl p-6 h-72 shadow-lg">
                   {resumoCategorias.some(c => c.realValor > 0) ? (
-                    <Doughnut data={prepararPizzaRealPorCategoria()} options={opcoesPizzaPercentual('Alocação Líquida Real (%)', 'real')} />
+                    <Doughnut data={prepararPizzaRealPorCategoria} options={opcoesPizzaPercentual('Alocação Líquida Real (%)', 'real')} />
                   ) : (
                     <div className="text-xs text-slate-500 font-medium text-center pt-28">Lance compras no extrato para computar a distribuição real.</div>
                   )}
@@ -974,7 +1036,7 @@ export default function App() {
               <div className="flex justify-between items-center px-1">
                 <h2 className="text-xs font-bold uppercase tracking-widest text-slate-400">Ativos & Desempenho Operacional</h2>
                 <span className="text-xs text-slate-400 font-medium bg-slate-900/60 border border-slate-900 px-2.5 py-1 rounded-lg">
-                  Patrimônio Combinado: <strong className="font-mono text-white ml-1">R$ {totalPatrimonioReal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                  Patrimônio: <strong className="font-mono text-white ml-1">R$ {totalPatrimonioReal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
                 </span>
               </div>
 
@@ -1057,7 +1119,7 @@ export default function App() {
               <div className="p-4 bg-slate-900/50 border-b border-slate-900 flex justify-between items-center">
                 <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">📊 Preços Teto por Ativo</h3>
                 <button 
-                  onClick={() => actualizarPrecos()} 
+                  onClick={ejecutarCronVerificacao} 
                   disabled={isCronRunning}
                   className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-bold rounded-lg transition-all flex items-center gap-2"
                 >
@@ -1065,14 +1127,14 @@ export default function App() {
                   {isCronRunning ? 'Atualizando...' : 'Atualizar Preços'}
                 </button>
               </div>
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto max-h-96 overflow-y-auto">
                 <table className="w-full text-left text-xs">
-                  <thead>
-                    <tr className="bg-slate-950 text-slate-400 border-b border-slate-900 font-mono text-[10px]">
+                  <thead className="sticky top-0 bg-slate-950 z-10">
+                    <tr className="text-slate-400 border-b border-slate-900 font-mono text-[10px]">
                       <th className="p-3">Ticker</th>
                       <th className="p-3">Setor</th>
-                      <th className="p-3">Preço Atual</th>
-                      <th className="p-3">Preço Médio</th>
+                      <th className="p-3 text-emerald-400">Preço Atual</th>
+                      <th className="p-3 text-amber-400">Preço Médio</th>
                       <th className="p-3 text-purple-400">Bazin</th>
                       <th className="p-3 text-blue-400">Gordon</th>
                       <th className="p-3 text-emerald-400">Graham</th>
@@ -1096,6 +1158,7 @@ export default function App() {
                       });
 
                       const precoAtual = posicao.precoAtual || parseFloat(t.preco_custo || 0);
+                      const precoMedio = posicao.precoMedio || parseFloat(t.preco_custo || 0);
                       
                       return (
                         <tr key={t.id} className="hover:bg-slate-900/30 transition-colors">
@@ -1106,7 +1169,7 @@ export default function App() {
                               R$ {precoAtual.toFixed(2)}
                             </span>
                           </td>
-                          <td className="p-3 font-mono text-amber-400">R$ {posicao.precoMedio.toFixed(2)}</td>
+                          <td className="p-3 font-mono text-amber-400">R$ {precoMedio.toFixed(2)}</td>
                           <td className="p-3 font-mono text-purple-400">
                             {valMap['bazin'] ? `R$ ${valMap['bazin'].toFixed(2)}` : '-'}
                           </td>
@@ -1167,8 +1230,8 @@ export default function App() {
               </div>
 
               <div className="h-72 w-full pt-2">
-                {logsFinaisExibicao.length > 0 ? (
-                  <Line data={prepararDadosGraficoLinha()} options={{ responsive: true, maintainAspectRatio: false, scales: { y: { grid: { color: '#1e293b/30' }, ticks: { color: '#64748b', font: { size: 10, family: 'JetBrains Mono' } } }, x: { grid: { display: false }, ticks: { color: '#64748b', font: { size: 9, family: 'JetBrains Mono' } } } }, plugins: { legend: { position: 'top', labels: { color: '#94a3b8', font: { size: 11, family: 'Plus Jakarta Sans' } } } } }} />
+                {logsFinaisExibicao.length > 0 && prepararDadosGraficoLinha.datasets.length > 0 ? (
+                  <Line data={prepararDadosGraficoLinha} options={{ responsive: true, maintainAspectRatio: false, scales: { y: { grid: { color: '#1e293b/30' }, ticks: { color: '#64748b', font: { size: 10, family: 'JetBrains Mono' } } }, x: { grid: { display: false }, ticks: { color: '#64748b', font: { size: 9, family: 'JetBrains Mono' } } } }, plugins: { legend: { position: 'top', labels: { color: '#94a3b8', font: { size: 11, family: 'Plus Jakarta Sans' } } } } }} />
                 ) : (
                   <div className="text-xs text-slate-500 font-medium text-center pt-28">Nenhum log histórico encontrado para os parâmetros selecionados.</div>
                 )}
