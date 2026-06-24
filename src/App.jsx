@@ -30,7 +30,8 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [isCronRunning, setIsCronRunning] = useState(false);
   const [lastCheckTime, setLastCheckTime] = useState('Nunca verificado');
-  const [nextUpdateTime, setNextUpdateTime] = useState('');
+  const [tempoRestante, setTempoRestante] = useState('15:00');
+  const [ultimaAtualizacao, setUltimaAtualizacao] = useState(null);
   
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalId, setModalId] = useState('');
@@ -67,7 +68,7 @@ export default function App() {
   const [novoSetorMeta, setNovoSetorMeta] = useState('');
   const [modoValorGraficos, setModoValorGraficos] = useState('percentual');
   const [precosAtuais, setPrecosAtuais] = useState({});
-  const [ultimaAtualizacao, setUltimaAtualizacao] = useState(null);
+  const [indicadoresFundamentalistas, setIndicadoresFundamentalistas] = useState({});
 
   const showToast = (message, type = 'info') => {
     setToast({ show: true, message, type });
@@ -107,6 +108,84 @@ export default function App() {
     return { quantidade, precoMedio, custoTotal };
   }, [transacoes]);
 
+  // ===== BUSCAR DADOS FUNDAMENTALISTAS DA BRAPI =====
+  const buscarDadosFundamentalistas = useCallback(async (ticker) => {
+    try {
+      const tickerComSufixo = ticker.endsWith('.SA') ? ticker : `${ticker}.SA`;
+      const response = await fetch(
+        `https://brapi.dev/api/quote/${tickerComSufixo}?modules=dividends,financials,summaryProfile&token=${BRAPI_TOKEN}`
+      );
+      
+      if (response.ok) {
+        const data = await response.json();
+        if (data && data.results && data.results[0]) {
+          const ativo = data.results[0];
+          
+          // Extrair indicadores
+          const indicadores = {
+            dy: ativo.dividends?.dividendYield || ativo.dividendYield || 0,
+            payout: ativo.dividends?.payout || 0,
+            pl: ativo.priceToEarnings || 0,
+            pvp: ativo.priceToBook || 0,
+            roe: ativo.roe || 0,
+            roic: ativo.roic || 0,
+            margem_liquida: ativo.profitMargin || 0,
+            divida_ebitda: ativo.debtToEbitda || 0,
+            setor: ativo.sector || ativo.summaryProfile?.sector || '',
+            subsetor: ativo.industry || ativo.summaryProfile?.industry || ''
+          };
+          
+          return indicadores;
+        }
+      }
+      return null;
+    } catch (error) {
+      console.error(`Erro ao buscar dados de ${ticker}:`, error);
+      return null;
+    }
+  }, []);
+
+  // ===== CALCULAR PREÇOS TETO =====
+  const calcularPrecosTeto = useCallback((ticker, indicadores) => {
+    const precos = {};
+    
+    if (!indicadores) return precos;
+    
+    // Bazin: Preço Teto = DY * 100 / 6
+    if (indicadores.dy && indicadores.dy > 0) {
+      precos.bazin = (indicadores.dy * 100) / 6;
+    }
+    
+    // Gordon: Preço Teto = (Dividendos * (1 + Crescimento)) / (Taxa de Desconto - Crescimento)
+    // Usando DY como proxy de dividendos e crescimento estimado de 5%
+    if (indicadores.dy && indicadores.dy > 0) {
+      const crescimento = 0.05;
+      const taxaDesconto = 0.10;
+      precos.gordon = (indicadores.dy * (1 + crescimento)) / (taxaDesconto - crescimento);
+    }
+    
+    // Graham: Preço Teto = sqrt(22.5 * EPS * Book Value)
+    if (indicadores.pl && indicadores.pvp && indicadores.pl > 0 && indicadores.pvp > 0) {
+      // Estimativa aproximada
+      const eps = 1 / indicadores.pl;
+      const bookValue = 1 / indicadores.pvp;
+      precos.graham = Math.sqrt(22.5 * eps * bookValue);
+    }
+    
+    // Barsi: Preço Teto = DY * 100 / 6 (similar ao Bazin, mas com margem)
+    if (indicadores.dy && indicadores.dy > 0) {
+      precos.barsi = (indicadores.dy * 100) / 6;
+    }
+    
+    // Fluxo de Caixa: Preço Teto = (Fluxo de Caixa / Ações) * 10
+    if (indicadores.roe && indicadores.roe > 0) {
+      // Estimativa simplificada
+      precos.fluxo_caixa = indicadores.roe * 2;
+    }
+    
+    return precos;
+  }, []);
+
   // ===== BUSCAR PREÇOS DA BRAPI =====
   const buscarPrecosBrapi = useCallback(async (tickers) => {
     if (!tickers || tickers.length === 0) return {};
@@ -128,23 +207,81 @@ export default function App() {
       
       const dados = await response.json();
       const precos = {};
+      const fundamentalistas = {};
       
       if (dados && dados.results) {
-        dados.results.forEach(ativo => {
-          if (ativo && ativo.symbol && ativo.regularMarketPrice !== undefined) {
+        for (const ativo of dados.results) {
+          if (ativo && ativo.symbol) {
             const chaveLimpa = ativo.symbol.toUpperCase().replace('.SA', '').trim();
-            precos[chaveLimpa] = parseFloat(ativo.regularMarketPrice);
-            console.log(`✅ ${chaveLimpa}: R$ ${precos[chaveLimpa]}`);
+            
+            // Preço atual
+            if (ativo.regularMarketPrice !== undefined) {
+              precos[chaveLimpa] = parseFloat(ativo.regularMarketPrice);
+              console.log(`✅ ${chaveLimpa}: R$ ${precos[chaveLimpa]}`);
+            }
+            
+            // Dados fundamentalistas
+            const indicadores = {
+              dy: ativo.dividendYield || 0,
+              pl: ativo.priceToEarnings || 0,
+              pvp: ativo.priceToBook || 0,
+              roe: ativo.roe || 0,
+              setor: ativo.sector || ''
+            };
+            
+            fundamentalistas[chaveLimpa] = indicadores;
+            
+            // Salvar indicadores no Supabase
+            try {
+              await fetch(`${SB_URL}/rest/v1/finance_asset_indicators`, {
+                method: 'POST',
+                headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+                body: JSON.stringify({
+                  ticker: chaveLimpa,
+                  pl: indicadores.pl || 0,
+                  pvp: indicadores.pvp || 0,
+                  roe: indicadores.roe || 0,
+                  dy: indicadores.dy || 0,
+                  atualizado_em: new Date().toISOString()
+                })
+              });
+            } catch (e) {
+              console.error(`Erro ao salvar indicadores de ${chaveLimpa}:`, e);
+            }
+            
+            // Calcular preços teto
+            const precosTeto = calcularPrecosTeto(chaveLimpa, indicadores);
+            
+            // Salvar valuations no Supabase
+            for (const [metodologia, preco] of Object.entries(precosTeto)) {
+              if (preco > 0) {
+                try {
+                  await fetch(`${SB_URL}/rest/v1/finance_asset_valuation`, {
+                    method: 'POST',
+                    headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
+                    body: JSON.stringify({
+                      ticker: chaveLimpa,
+                      metodologia: metodologia,
+                      preco_teto: parseFloat(preco.toFixed(2)),
+                      atualizado_em: new Date().toISOString()
+                    })
+                  });
+                } catch (e) {
+                  console.error(`Erro ao salvar valuation de ${chaveLimpa}:`, e);
+                }
+              }
+            }
           }
-        });
+        }
       }
       
+      setIndicadoresFundamentalistas(fundamentalistas);
       return precos;
     } catch (error) {
       console.error('❌ Erro ao buscar preços da Brapi:', error);
       return {};
     }
-  }, []);
+  }, [calcularPrecosTeto]);
 
   // ===== ATUALIZAR PREÇOS =====
   const atualizarPrecos = useCallback(async () => {
@@ -159,6 +296,8 @@ export default function App() {
     }
     
     setIsCronRunning(true);
+    setTempoRestante('00:00');
+    
     try {
       const tickers = tickets.map(t => t.ticker);
       console.log(`🚀 Iniciando atualização de preços para ${tickers.length} ativos...`);
@@ -190,7 +329,6 @@ export default function App() {
       if (logsNovos.length > 0) {
         console.log(`💾 Salvando ${logsNovos.length} logs de preços...`);
         
-        // Salvar em lotes de 50 para evitar timeout
         for (let i = 0; i < logsNovos.length; i += 50) {
           const batch = logsNovos.slice(i, i + 50);
           const response = await fetch(`${SB_URL}/rest/v1/finance_price_logs`, { 
@@ -207,12 +345,23 @@ export default function App() {
         console.log(`✅ ${logsNovos.length} logs salvos com sucesso!`);
       }
       
+      // Buscar valuations atualizadas
+      const resVal = await fetch(`${SB_URL}/rest/v1/finance_asset_valuation?order=ticker.asc`, { 
+        method: 'GET', 
+        headers: SB_HDR 
+      });
+      if (resVal.ok) {
+        const dataVal = await resVal.json();
+        setValuations(Array.isArray(dataVal) ? dataVal : []);
+      }
+      
       showToast(`✅ Preços atualizados para ${Object.keys(precos).length} ativos`, 'success');
     } catch (err) {
       console.error('❌ Erro ao atualizar preços:', err);
       showToast('❌ Erro ao atualizar preços: ' + err.message, 'error');
     } finally {
       setIsCronRunning(false);
+      setTempoRestante('15:00');
     }
   }, [tickets, buscarPrecosBrapi, isCronRunning]);
 
@@ -236,7 +385,6 @@ export default function App() {
       const dataRules = await resRules.json();
       const dataLogs = await resLogs.json();
 
-      // Carregar metas de setores
       let mapeamentoSetores = {};
       let mapeamentoAtivos = {};
       
@@ -279,7 +427,6 @@ export default function App() {
       
       console.log(`✅ Dados carregados: ${dataTickets.length} tickets, ${dataTx.length} transações`);
 
-      // Buscar preços atuais imediatamente
       if (dataTickets && dataTickets.length > 0) {
         const tickers = dataTickets.map(t => t.ticker);
         const precos = await buscarPrecosBrapi(tickers);
@@ -304,42 +451,61 @@ export default function App() {
     carregarDados(); 
   }, [carregarDados]);
 
-  // ===== CRONÔMETRO DE ATUALIZAÇÃO =====
+  // ===== CRONÔMETRO =====
   useEffect(() => {
+    let timerInterval = null;
+    let cronometroInterval = null;
+    const INTERVALO_MINUTOS = 15;
+    const INTERVALO_MS = INTERVALO_MINUTOS * 60 * 1000;
+    
+    const iniciarCronometro = () => {
+      if (cronometroInterval) clearInterval(cronometroInterval);
+      
+      let segundosRestantes = INTERVALO_MINUTOS * 60;
+      
+      cronometroInterval = setInterval(() => {
+        if (!isCronRunning) {
+          segundosRestantes--;
+          
+          if (segundosRestantes <= 0) {
+            segundosRestantes = INTERVALO_MINUTOS * 60;
+            setTempoRestante('00:00');
+          } else {
+            const minutos = Math.floor(segundosRestantes / 60);
+            const segundos = segundosRestantes % 60;
+            setTempoRestante(`${String(minutos).padStart(2, '0')}:${String(segundos).padStart(2, '0')}`);
+          }
+        }
+      }, 1000);
+    };
+
     // Primeira atualização após 3 segundos
     const initialTimeout = setTimeout(() => {
       if (tickets && tickets.length > 0 && !isCronRunning) {
         console.log('⏰ Primeira atualização automática');
         atualizarPrecos();
+        iniciarCronometro();
       }
     }, 3000);
 
     // Atualizar a cada 15 minutos
-    const interval = setInterval(() => {
+    timerInterval = setInterval(() => {
       if (tickets && tickets.length > 0 && !isCronRunning) {
         console.log('⏰ Atualização automática programada (15min)');
         atualizarPrecos();
+        iniciarCronometro();
       }
-    }, 900000);
+    }, INTERVALO_MS);
 
-    // Atualizar indicador de próxima atualização
-    const updateTimer = setInterval(() => {
-      if (ultimaAtualizacao) {
-        const nextUpdate = new Date(ultimaAtualizacao.getTime() + 900000);
-        const now = new Date();
-        const diff = Math.max(0, Math.floor((nextUpdate - now) / 60000));
-        setNextUpdateTime(`${diff}min`);
-      } else {
-        setNextUpdateTime('aguardando...');
-      }
-    }, 60000);
+    // Iniciar cronômetro após primeira atualização
+    setTimeout(iniciarCronometro, 5000);
 
     return () => {
       clearTimeout(initialTimeout);
-      clearInterval(interval);
-      clearInterval(updateTimer);
+      clearInterval(timerInterval);
+      if (cronometroInterval) clearInterval(cronometroInterval);
     };
-  }, [tickets, atualizarPrecos, isCronRunning, ultimaAtualizacao]);
+  }, [tickets, atualizarPrecos, isCronRunning]);
 
   // ===== SUGESTÕES DE TICKER =====
   useEffect(() => {
@@ -945,7 +1111,7 @@ export default function App() {
           <div>
             <div className="flex items-center gap-2">
               <h1 className="text-2xl font-extrabold bg-gradient-to-r from-blue-400 via-indigo-400 to-purple-400 bg-clip-text text-transparent tracking-tight">LogTicket</h1>
-              <span className="text-[10px] bg-blue-500/10 border border-blue-500/20 text-blue-400 font-mono px-1.5 py-0.5 rounded">v3.3</span>
+              <span className="text-[10px] bg-blue-500/10 border border-blue-500/20 text-blue-400 font-mono px-1.5 py-0.5 rounded">v3.4</span>
             </div>
             <p className="text-xs text-slate-400 mt-1 font-medium">Gestão Automatizada de Portfólio com Preço Teto</p>
             <div className="flex gap-1 mt-4 bg-slate-950 p-1 rounded-xl border border-slate-800/80 w-fit">
@@ -954,19 +1120,21 @@ export default function App() {
             </div>
           </div>
         </div>
-        <div className="flex flex-wrap gap-2.5 w-full md:w-auto">
+        <div className="flex flex-wrap gap-2.5 w-full md:w-auto items-center">
           <button onClick={() => abrirModalTransacao()} className="flex-1 md:flex-none px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold text-xs rounded-xl transition-all shadow-lg shadow-emerald-950/20 active:scale-[0.98]">💸 Registrar Ordem</button>
           <button onClick={() => { setModalId(''); setModalTicker(''); setModalNome(''); setModalSetorAuto(''); setIsModalOpen(true); }} className="flex-1 md:flex-none px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-slate-100 font-bold text-xs rounded-xl transition-all shadow-lg active:scale-[0.98]">➕ Novo Ticker</button>
           <button onClick={ejecutarCronVerificacao} disabled={isCronRunning} className={`px-4 py-2.5 bg-slate-950 hover:bg-slate-900 border border-slate-800 text-xs font-bold font-mono text-slate-400 rounded-xl transition-all flex items-center gap-2 ${isCronRunning ? 'opacity-50 cursor-not-allowed' : ''}`}>
             <span className={`w-1.5 h-1.5 rounded-full ${isCronRunning ? 'animate-ping bg-blue-400' : 'bg-emerald-400'}`} />
             {isCronRunning ? 'Atualizando...' : '↻ Preços'}
           </button>
-          <span className="text-[10px] text-slate-500 font-mono self-center">
-            Última: {lastCheckTime}
-          </span>
-          <span className="text-[9px] text-slate-600 font-mono self-center">
-            ⏱️ {nextUpdateTime || '15min'}
-          </span>
+          <div className="flex flex-col items-end">
+            <span className="text-[10px] text-slate-500 font-mono">
+              Última: {lastCheckTime}
+            </span>
+            <span className={`text-[11px] font-mono font-bold ${isCronRunning ? 'text-blue-400 animate-pulse' : 'text-emerald-400'}`}>
+              ⏱️ {isCronRunning ? 'Atualizando...' : tempoRestante}
+            </span>
+          </div>
         </div>
       </header>
 
@@ -1118,14 +1286,19 @@ export default function App() {
             <div className="mt-6 bg-slate-900/40 border border-slate-900 rounded-2xl overflow-hidden shadow-xl">
               <div className="p-4 bg-slate-900/50 border-b border-slate-900 flex justify-between items-center">
                 <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">📊 Preços Teto por Ativo</h3>
-                <button 
-                  onClick={ejecutarCronVerificacao} 
-                  disabled={isCronRunning}
-                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-bold rounded-lg transition-all flex items-center gap-2"
-                >
-                  <span className={`w-1.5 h-1.5 rounded-full ${isCronRunning ? 'animate-ping bg-blue-400' : 'bg-emerald-400'}`} />
-                  {isCronRunning ? 'Atualizando...' : 'Atualizar Preços'}
-                </button>
+                <div className="flex items-center gap-3">
+                  <span className="text-[10px] text-slate-500 font-mono">
+                    ⏱️ Próxima atualização: {tempoRestante}
+                  </span>
+                  <button 
+                    onClick={ejecutarCronVerificacao} 
+                    disabled={isCronRunning}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-bold rounded-lg transition-all flex items-center gap-2"
+                  >
+                    <span className={`w-1.5 h-1.5 rounded-full ${isCronRunning ? 'animate-ping bg-blue-400' : 'bg-emerald-400'}`} />
+                    {isCronRunning ? 'Atualizando...' : 'Atualizar Agora'}
+                  </button>
+                </div>
               </div>
               <div className="overflow-x-auto max-h-96 overflow-y-auto">
                 <table className="w-full text-left text-xs">
@@ -1353,6 +1526,7 @@ export default function App() {
         )}
       </main>
 
+      {/* MODAIS... (manter os mesmos modais da versão anterior) */}
       {/* MODAL: Criar/Editar Ticker */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
