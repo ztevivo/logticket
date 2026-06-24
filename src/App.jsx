@@ -20,7 +20,6 @@ const SETOR_PADRAO = 'Outros / Não Classificado';
 const PALETA_CATEGORIAS = ['#6366f1', '#14b8a6', '#f43f5e', '#eab308', '#a855f7', '#06b6d4', '#3b82f6', '#10b981', '#ec4899', '#f97316'];
 const corDaCategoria = (idx) => PALETA_CATEGORIAS[idx % PALETA_CATEGORIAS.length];
 
-// Metodologias disponíveis
 const METODOLOGIAS = [
   { id: 'bazin', label: 'Bazin', desc: 'DY / 6%' },
   { id: 'gordon', label: 'Gordon', desc: 'Dividendos + Crescimento' },
@@ -76,15 +75,11 @@ export default function App() {
   const [novoSetorMeta, setNovoSetorMeta] = useState('');
   const [modoValorGraficos, setModoValorGraficos] = useState('percentual');
 
-  // Métricas calculadas
-  const [posicoesAtivos, setPosicoesAtivos] = useState({});
-
   const showToast = (message, type = 'info') => {
     setToast({ show: true, message, type });
     setTimeout(() => setToast({ show: false, message: '', type: 'info' }), 4000);
   };
 
-  // Função para recalcular posição via SQL (mais confiável)
   const recalcularPosicaoAtivo = useCallback(async (ticker) => {
     try {
       const response = await fetch(
@@ -104,7 +99,6 @@ export default function App() {
     }
   }, []);
 
-  // Função para recalcular todos os ativos
   const recalcularTodosAtivos = useCallback(async () => {
     try {
       await fetch(
@@ -119,27 +113,21 @@ export default function App() {
   const carregarDados = useCallback(async () => {
     setLoading(true);
     try {
-      // Carregar tickets
       const resTickets = await fetch(`${SB_URL}/rest/v1/finance_tickets?order=ticker.asc`, { method: 'GET', headers: SB_HDR });
       const dataTickets = await resTickets.json();
       
-      // Carregar transações com preço médio
       const resTx = await fetch(`${SB_URL}/rest/v1/finance_transactions?order=registrado_em.desc`, { method: 'GET', headers: SB_HDR });
       const dataTx = await resTx.json();
 
-      // Carregar valuations
       const resVal = await fetch(`${SB_URL}/rest/v1/finance_asset_valuation?order=ticker.asc`, { method: 'GET', headers: SB_HDR });
       const dataVal = await resVal.json();
 
-      // Carregar indicadores
       const resInd = await fetch(`${SB_URL}/rest/v1/finance_asset_indicators?order=ticker.asc`, { method: 'GET', headers: SB_HDR });
       const dataInd = await resInd.json();
 
-      // Carregar regras de setor
       const resRules = await fetch(`${SB_URL}/rest/v1/finance_sector_rules`, { method: 'GET', headers: SB_HDR });
       const dataRules = await resRules.json();
 
-      // Carregar metas
       let mapeamentoSetores = {};
       let mapeamentoAtivos = {};
       
@@ -181,7 +169,6 @@ export default function App() {
       setAtivosMeta(mapeamentoAtivos);
       setLastCheckTime(new Date().toLocaleTimeString('pt-BR'));
 
-      // Recalcular posições para consistência
       await recalcularTodosAtivos();
 
     } catch (err) {
@@ -196,7 +183,6 @@ export default function App() {
     carregarDados();
   }, [carregarDados]);
 
-  // Efeito para sugestões de ticker
   useEffect(() => {
     if (modalId || !modalTicker.trim() || modalTicker.trim().length < 2) {
       setSugestoes([]);
@@ -356,7 +342,6 @@ export default function App() {
     } catch (err) { showToast(err.message, 'error'); }
   };
 
-  // ===== TRANSAÇÕES =====
   const abrirModalTransacao = (idOrdem = '', tickerPredefinido = '') => {
     if (idOrdem) {
       const txExistente = transacoes.find(t => t.id === idOrdem);
@@ -388,7 +373,6 @@ export default function App() {
     const dataIso = new Date(txData + 'T12:00:00').toISOString();
 
     try {
-      // Buscar setor do ativo
       const setorInfo = ativosMeta[tkr]?.setor || '';
       const bodyData = { 
         ticker: tkr, 
@@ -415,7 +399,6 @@ export default function App() {
 
       setIsTxModalOpen(false);
       
-      // Recalcular posição do ativo
       const posicao = await recalcularPosicaoAtivo(tkr);
       
       if (posicao) {
@@ -441,7 +424,6 @@ export default function App() {
     try {
       await fetch(`${SB_URL}/rest/v1/finance_transactions?id=eq.${id}`, { method: 'DELETE', headers: SB_HDR });
       
-      // Recalcular posição
       const posicao = await recalcularPosicaoAtivo(ticker);
       if (posicao) {
         await fetch(`${SB_URL}/rest/v1/finance_tickets?ticker=eq.${ticker}`, {
@@ -459,7 +441,6 @@ export default function App() {
     } catch (e) { showToast(e.message, 'error'); }
   };
 
-  // ===== VALUATIONS =====
   const abrirModalValuation = (ticker) => {
     setValTicker(ticker);
     setValMetodologia('bazin');
@@ -489,7 +470,6 @@ export default function App() {
     }
   };
 
-  // ===== METAS =====
   const adicionarSetor = async (e) => {
     e.preventDefault();
     if (!novoSetorNome.trim() || !novoSetorMeta) return;
@@ -555,7 +535,6 @@ export default function App() {
     }
   };
 
-  // ===== MÉTRICAS =====
   const normalizarSetor = (valor) => {
     if (!valor || valor === 'Sem Setor' || valor === 'Sem Grupo') return SETOR_PADRAO;
     return valor;
@@ -570,7 +549,6 @@ export default function App() {
     }
   };
 
-  // Calcular patrimônio total e posições
   const totalPatrimonioReal = Array.isArray(tickets) ? tickets.reduce((acc, t) => {
     if (!t) return acc;
     const qtd = parseFloat(t.quantidade || 0);
@@ -578,24 +556,15 @@ export default function App() {
     return acc + (qtd * precoMedio);
   }, 0) : 0;
 
-  // Buscar preço atual para cada ativo (do último log)
-  const getPrecoAtual = (ticker) => {
-    // Buscar do valuation ou do preço médio como fallback
-    return parseFloat(ticker.preco_custo || 0);
-  };
-
-  // Buscar preços teto por ticker
   const getValuationsPorTicker = (ticker) => {
     return valuations.filter(v => v.ticker.toUpperCase() === ticker.toUpperCase());
   };
 
-  // Buscar metodologia recomendada por setor
   const getMetodologiaRecomendada = (setor) => {
     const rule = sectorRules.find(r => r.setor === setor);
     return rule?.metodologia_recomendada || 'Bazin';
   };
 
-  // Resumo por categorias
   const resumoCategorias = (() => {
     const mapa = {};
 
@@ -627,4 +596,108 @@ export default function App() {
     (Array.isArray(tickets) ? tickets : []).forEach(t => {
       if (!t) return;
       const tkr = t.ticker.toUpperCase();
-      const info = ativosMeta
+      const info = ativosMeta[tkr] || { setor: '', metaGrupo: 0 };
+      const setor = normalizarSetor(info.setor);
+      if (!grupos[setor]) grupos[setor] = [];
+      grupos[setor].push({ ticket: t, metaGrupo: info.metaGrupo || 0 });
+    });
+
+    return grupos;
+  })();
+
+  const prepararPizzaMetaPorCategoria = () => ({
+    labels: resumoCategorias.map(c => c.setor),
+    datasets: [{
+      data: resumoCategorias.map(c => c.metaPct),
+      backgroundColor: resumoCategorias.map((_, i) => corDaCategoria(i)),
+      borderWidth: 0
+    }]
+  });
+
+  const prepararPizzaRealPorCategoria = () => ({
+    labels: resumoCategorias.map(c => c.setor),
+    datasets: [{
+      data: resumoCategorias.map(c => c.realValor),
+      backgroundColor: resumoCategorias.map((_, i) => corDaCategoria(i)),
+      borderWidth: 0
+    }]
+  });
+
+  const formatarValorExibicao = (categoria, campo) => {
+    if (campo === 'meta') {
+      return modoValorGraficos === 'percentual'
+        ? `${categoria.metaPct.toFixed(1)}%`
+        : `R$ ${((categoria.metaPct / 100) * totalPatrimonioReal).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`;
+    }
+    const realPct = totalPatrimonioReal > 0 ? (categoria.realValor / totalPatrimonioReal) * 100 : 0;
+    return modoValorGraficos === 'percentual'
+      ? `${realPct.toFixed(1)}%`
+      : `R$ ${categoria.realValor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`;
+  };
+
+  const calcularDeltaPP = (categoria) => {
+    const realPct = totalPatrimonioReal > 0 ? (categoria.realValor / totalPatrimonioReal) * 100 : 0;
+    return realPct - categoria.metaPct;
+  };
+
+  const opcoesPizzaPercentual = (titulo, tipo = 'meta') => ({
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      title: { display: true, text: titulo, color: '#f8fafc', font: { size: 14, family: 'Plus Jakarta Sans', weight: '700' }, padding: { bottom: 10 } },
+      tooltip: {
+        callbacks: {
+          label: (ctx) => {
+            const valor = ctx.parsed;
+            if (tipo === 'meta') return ` ${ctx.label}: ${valor.toFixed(1)}%`;
+            const pct = totalPatrimonioReal > 0 ? (valor / totalPatrimonioReal) * 100 : 0;
+            return ` ${ctx.label}: R$ ${valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} (${pct.toFixed(1)}%)`;
+          }
+        }
+      }
+    }
+  });
+
+  const logsFinaisExibicao = Array.isArray(transacoes) ? transacoes.filter(log => {
+    if (!log || !log.registrado_em) return false;
+    const d = log.registrado_em.split('T')[0];
+    return d >= dataInicio && d <= dataFim && (ativosSelecionados.length === 0 || ativosSelecionados.includes(log.ticker.toUpperCase()));
+  }) : [];
+
+  const prepararDadosGraficoLinha = () => {
+    const todosOsHorarios = [...new Set(logsFinaisExibicao.map(l => {
+      const d = new Date(l.registrado_em);
+      return `${d.toLocaleDateString('pt-BR')} ${d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`;
+    }))];
+    
+    const tickersParaPlotar = ativosSelecionados.length > 0 ? ativosSelecionados : [...new Set(transacoes.map(l => l && l.ticker ? l.ticker.toUpperCase() : ''))].filter(Boolean);
+    
+    return {
+      labels: todosOsHorarios,
+      datasets: tickersParaPlotar.map((ticker, idx) => {
+        const logsDoAtivo = logsFinaisExibicao.filter(l => l && l.ticker && l.ticker.toUpperCase() === ticker);
+        return {
+          label: ticker,
+          data: logsDoAtivo.map(l => parseFloat(l.preco || 0)),
+          borderColor: ['#3b82f6', '#10b981', '#f43f5e', '#eab308', '#8b5cf6', '#ec4899', '#14b8a6'][idx % 7],
+          borderWidth: 2, fill: false, tension: 0.2, pointRadius: 2
+        };
+      }).filter(dataset => dataset.data.length > 0)
+    };
+  };
+
+  return (
+    <div className="min-h-screen p-4 md:p-8 text-slate-200">
+      
+      {toast.show && (
+        <div className="fixed top-6 right-6 z-50 flex items-center gap-3 px-4 py-3.5 rounded-xl bg-slate-900/90 backdrop-blur-md border border-slate-800 text-slate-200 text-xs shadow-2xl shadow-black/50 animate-slide-up">
+          <div className={`w-2 h-2 rounded-full ${toast.type === 'error' ? 'bg-rose-500' : 'bg-emerald-500'}`} />
+          <span className="font-medium">{toast.message}</span>
+        </div>
+      )}
+
+      <header className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10 bg-slate-900/40 backdrop-blur-md border border-slate-900 p-6 rounded-2xl shadow-xl shadow-black/20">
+        <div className="flex items-center gap-4">
+          <div className="p-2.5 bg-blue-600/10 border border-blue-500/20 rounded-xl text-blue-400">
+            <svg className="w-8 h-8" viewBox="0 0 24 24" fill="none" xmlns="http://
