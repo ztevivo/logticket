@@ -374,17 +374,37 @@ export default function App() {
     } catch (e) { showToast(e.message, 'error'); }
   };
 
-  const persistirSetorAtivo = async (tkrChave, setorDefinido) => {
+  const persistirSetorAtivo = async (tkrChave, setorDefinido, pesoGrupoExistente = null) => {
+    // 1) Garante que a categoria exista (upsert por nome — esta tabela tem
+    // constraint única em "nome", então o merge-duplicates funciona de verdade aqui).
     await fetch(`${SB_URL}/rest/v1/finance_target_sectors`, {
       method: 'POST',
       headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
       body: JSON.stringify({ nome: setorDefinido, meta_percentual: 0 })
     });
 
+    // Preserva o peso já configurado do ativo dentro do grupo (se existir);
+    // só usa 100% como padrão quando o ativo é realmente novo.
+    const pesoGrupo = (pesoGrupoExistente !== null && pesoGrupoExistente !== undefined) ? pesoGrupoExistente : 100;
+
+    // 2) Tenta inserir o vínculo (cobre o caso de o ativo ainda não ter nenhuma linha)
     await fetch(`${SB_URL}/rest/v1/finance_target_assets`, {
       method: 'POST',
       headers: { ...SB_HDR, 'Prefer': 'resolution=merge-duplicates' },
-      body: JSON.stringify({ ticker: tkrChave, setor_nome: setorDefinido, meta_group_percentual: 100 })
+      body: JSON.stringify({ ticker: tkrChave, setor_nome: setorDefinido, meta_group_percentual: pesoGrupo })
+    });
+
+    // 3) CORREÇÃO CRÍTICA: força a sincronização de QUALQUER linha já existente
+    // para esse ticker em finance_target_assets. Diferente da tabela de setores,
+    // não há garantia de que "ticker" tenha uma constraint UNIQUE — sem esse PATCH,
+    // o passo 2 podia silenciosamente não atualizar nada (ou criar uma linha
+    // duplicada), e era exatamente por isso que reabrir um ticket já cadastrado
+    // (botão ⚙️) detectava o setor novo corretamente mas não classificava o
+    // ativo no front-end nem na aba Metas & Setores.
+    await fetch(`${SB_URL}/rest/v1/finance_target_assets?ticker=eq.${tkrChave}`, {
+      method: 'PATCH',
+      headers: SB_HDR,
+      body: JSON.stringify({ setor_nome: setorDefinido, meta_group_percentual: pesoGrupo })
     });
   };
 
@@ -393,11 +413,12 @@ export default function App() {
     if (!modalTicker.trim() || !modalNome.trim()) return;
     const tkrChave = modalTicker.trim().toUpperCase();
     const setorDefinido = modalSetorAuto || 'Outros / Não Classificado';
+    const pesoGrupoAtual = ativosMeta[tkrChave]?.metaGrupo;
 
     try {
       if (modalId) {
         await fetch(`${SB_URL}/rest/v1/finance_tickets?id=eq.${modalId}`, { method: 'PATCH', headers: SB_HDR, body: JSON.stringify({ nome: modalNome }) });
-        await persistirSetorAtivo(tkrChave, setorDefinido);
+        await persistirSetorAtivo(tkrChave, setorDefinido, pesoGrupoAtual);
       } else {
         await fetch(`${SB_URL}/rest/v1/finance_tickets`, { 
           method: 'POST', 
