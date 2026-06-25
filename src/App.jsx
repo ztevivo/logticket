@@ -134,68 +134,74 @@ export default function App() {
     return { quantidade, precoMedio, custoTotal };
   }, [transacoes]);
 
-  // ===== CORREÇÃO 3: Buscar preços via proxy ou direto =====
-  const buscarPrecosBrapi = useCallback(async (tickers) => {
-    if (!tickers || tickers.length === 0) return {};
+  // ===== CORREÇÃO: Buscar preços usando CORS proxy público =====
+const buscarPrecosBrapi = useCallback(async (tickers) => {
+  if (!tickers || tickers.length === 0) return {};
+  
+  try {
+    const listaTickers = tickers.map(t => {
+      const tk = t.toUpperCase().trim();
+      return tk.endsWith('.SA') ? tk : `${tk}.SA`;
+    }).join(',');
+
+    console.log(`🔍 Buscando preços para: ${listaTickers}`);
     
+    // Usar CORS proxy público
+    const url = `https://api.allorigins.win/raw?url=${encodeURIComponent(`https://brapi.dev/api/quote/${listaTickers}?token=${BRAPI_TOKEN}`)}`;
+    
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    
+    const dados = await response.json();
+    
+    const precos = {};
+    if (dados && dados.results) {
+      dados.results.forEach(ativo => {
+        if (ativo && ativo.symbol && ativo.regularMarketPrice !== undefined) {
+          const chaveLimpa = ativo.symbol.toUpperCase().replace('.SA', '').trim();
+          precos[chaveLimpa] = parseFloat(ativo.regularMarketPrice);
+        }
+      });
+    }
+    
+    console.log(`✅ Preços obtidos: ${Object.keys(precos).length} ativos`);
+    return precos;
+  } catch (error) {
+    console.error('❌ Erro ao buscar preços:', error);
+    
+    // Fallback: tentar sem proxy (pode funcionar em alguns navegadores)
     try {
       const listaTickers = tickers.map(t => {
         const tk = t.toUpperCase().trim();
         return tk.endsWith('.SA') ? tk : `${tk}.SA`;
       }).join(',');
-
-      console.log(`🔍 Buscando preços para: ${listaTickers}`);
       
-      // Tentativa 1: Via proxy (recomendado)
-      try {
-        const proxyUrl = `/api/proxy?tickers=${listaTickers}`;
-        const response = await fetch(proxyUrl);
-        
-        if (response.ok) {
-          const dados = await response.json();
-          const precos = {};
-          if (dados && dados.results) {
-            dados.results.forEach(ativo => {
-              if (ativo && ativo.symbol && ativo.regularMarketPrice !== undefined) {
-                const chaveLimpa = ativo.symbol.toUpperCase().replace('.SA', '').trim();
-                precos[chaveLimpa] = parseFloat(ativo.regularMarketPrice);
-              }
-            });
-          }
-          console.log(`✅ Preços obtidos via proxy: ${Object.keys(precos).length} ativos`);
-          return precos;
-        }
-      } catch (proxyError) {
-        console.log('Proxy falhou, tentando direto...', proxyError.message);
-      }
-      
-      // Tentativa 2: Direto (fallback)
       const response = await fetch(
         `https://brapi.dev/api/quote/${listaTickers}?token=${BRAPI_TOKEN}`
       );
       
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+      if (response.ok) {
+        const dados = await response.json();
+        const precos = {};
+        if (dados && dados.results) {
+          dados.results.forEach(ativo => {
+            if (ativo && ativo.symbol && ativo.regularMarketPrice !== undefined) {
+              const chaveLimpa = ativo.symbol.toUpperCase().replace('.SA', '').trim();
+              precos[chaveLimpa] = parseFloat(ativo.regularMarketPrice);
+            }
+          });
+        }
+        return precos;
       }
-      
-      const dados = await response.json();
-      const precos = {};
-      if (dados && dados.results) {
-        dados.results.forEach(ativo => {
-          if (ativo && ativo.symbol && ativo.regularMarketPrice !== undefined) {
-            const chaveLimpa = ativo.symbol.toUpperCase().replace('.SA', '').trim();
-            precos[chaveLimpa] = parseFloat(ativo.regularMarketPrice);
-          }
-        });
-      }
-      
-      console.log(`✅ Preços obtidos diretamente: ${Object.keys(precos).length} ativos`);
-      return precos;
-    } catch (error) {
-      console.error('❌ Erro ao buscar preços da Brapi:', error);
-      return {};
+    } catch (e) {
+      console.error('Fallback também falhou:', e);
     }
-  }, []);
+    return {};
+  }
+}, []);
 
   // ===== CORREÇÃO 4: Função de atualização melhorada =====
   const atualizarPrecos = useCallback(async (force = false) => {
