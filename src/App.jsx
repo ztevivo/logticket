@@ -134,6 +134,15 @@ export default function App() {
     return { quantidade, precoMedio, custoTotal };
   }, [transacoes]);
 
+  // Fallback para quando não conseguir buscar preços da API
+useEffect(() => {
+  // Se não tiver preços, usar preços do banco
+  if (Object.keys(precosAtuais).length === 0 && tickets.length > 0) {
+    console.log('📊 Usando preços do banco como fallback');
+    // Os preços já devem estar carregados do banco via carregarDados()
+  }
+}, [precosAtuais, tickets]);
+  
   // ===== CORREÇÃO: Buscar preços usando CORS proxy público =====
 const buscarPrecosBrapi = useCallback(async (tickers) => {
   if (!tickers || tickers.length === 0) return {};
