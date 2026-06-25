@@ -83,13 +83,24 @@ export default function App() {
     setTimeout(() => setToast({ show: false, message: '', type: 'info' }), 4000);
   };
 
-  const verificarMercadoAberto = useCallback(() => {
+  // ===== CORREÇÃO 1: Função para obter horário de Brasília =====
+  const getHoraBrasilia = useCallback(() => {
     const agora = new Date();
+    return new Date(agora.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+  }, []);
+
+  // ===== CORREÇÃO 2: Verificar mercado aberto com horário de Brasília =====
+  const verificarMercadoAberto = useCallback(() => {
+    const agora = getHoraBrasilia();
     const hora = agora.getHours();
     const diaSemana = agora.getDay();
+    
+    // Fim de semana
     if (diaSemana === 0 || diaSemana === 6) return false;
+    
+    // Horário de funcionamento (10h às 17h)
     return hora >= HORARIO_ABERTURA && hora < HORARIO_FECHAMENTO;
-  }, []);
+  }, [getHoraBrasilia]);
 
   const calcularPrecoMedio = useCallback((ticker) => {
     const transacoesAtivo = transacoes
@@ -123,8 +134,10 @@ export default function App() {
     return { quantidade, precoMedio, custoTotal };
   }, [transacoes]);
 
+  // ===== CORREÇÃO 3: Buscar preços via proxy ou direto =====
   const buscarPrecosBrapi = useCallback(async (tickers) => {
     if (!tickers || tickers.length === 0) return {};
+    
     try {
       const listaTickers = tickers.map(t => {
         const tk = t.toUpperCase().trim();
@@ -132,11 +145,39 @@ export default function App() {
       }).join(',');
 
       console.log(`🔍 Buscando preços para: ${listaTickers}`);
-      const response = await fetch(`https://brapi.dev/api/quote/${listaTickers}?token=${BRAPI_TOKEN}`);
-      if (!response.ok) {
-        console.error(`❌ Erro na Brapi: ${response.status}`);
-        return {};
+      
+      // Tentativa 1: Via proxy (recomendado)
+      try {
+        const proxyUrl = `/api/proxy?tickers=${listaTickers}`;
+        const response = await fetch(proxyUrl);
+        
+        if (response.ok) {
+          const dados = await response.json();
+          const precos = {};
+          if (dados && dados.results) {
+            dados.results.forEach(ativo => {
+              if (ativo && ativo.symbol && ativo.regularMarketPrice !== undefined) {
+                const chaveLimpa = ativo.symbol.toUpperCase().replace('.SA', '').trim();
+                precos[chaveLimpa] = parseFloat(ativo.regularMarketPrice);
+              }
+            });
+          }
+          console.log(`✅ Preços obtidos via proxy: ${Object.keys(precos).length} ativos`);
+          return precos;
+        }
+      } catch (proxyError) {
+        console.log('Proxy falhou, tentando direto...', proxyError.message);
       }
+      
+      // Tentativa 2: Direto (fallback)
+      const response = await fetch(
+        `https://brapi.dev/api/quote/${listaTickers}?token=${BRAPI_TOKEN}`
+      );
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      
       const dados = await response.json();
       const precos = {};
       if (dados && dados.results) {
@@ -147,6 +188,8 @@ export default function App() {
           }
         });
       }
+      
+      console.log(`✅ Preços obtidos diretamente: ${Object.keys(precos).length} ativos`);
       return precos;
     } catch (error) {
       console.error('❌ Erro ao buscar preços da Brapi:', error);
@@ -154,6 +197,7 @@ export default function App() {
     }
   }, []);
 
+  // ===== CORREÇÃO 4: Função de atualização melhorada =====
   const atualizarPrecos = useCallback(async (force = false) => {
     if (!force) {
       const aberto = verificarMercadoAberto();
@@ -169,6 +213,7 @@ export default function App() {
       if (diff < INTERVALO_MS - 5000) {
         const restante = Math.ceil((INTERVALO_MS - diff) / 1000);
         console.log(`⏳ Aguardando ${restante}s`);
+        showToast(`⏳ Aguarde ${Math.ceil(restante/60)} minuto(s)`, 'warning');
         return;
       }
     }
@@ -182,23 +227,23 @@ export default function App() {
       const tickers = tickets.map(t => t.ticker);
       const precos = await buscarPrecosBrapi(tickers);
       
-      if (Object.keys(precos).length === 0) return;
+      if (Object.keys(precos).length === 0) {
+        showToast('⚠️ Nenhum preço obtido. Tente novamente.', 'error');
+        setIsCronRunning(false);
+        return;
+      }
       
       setPrecosAtuais(precos);
       setUltimaAtualizacao(new Date());
       setLastCheckTime(new Date().toLocaleTimeString('pt-BR'));
       
-      const logsNovos = [];
-      Object.entries(precos).forEach(([ticker, preco]) => {
-        if (preco > 0) {
-          logsNovos.push({
-            ticker: ticker,
-            preco: parseFloat(preco.toFixed(2)),
-            status: "Atualização Automática",
-            registrado_em: new Date().toISOString()
-          });
-        }
-      });
+      // Salvar no Supabase
+      const logsNovos = Object.entries(precos).map(([ticker, preco]) => ({
+        ticker: ticker,
+        preco: parseFloat(preco.toFixed(2)),
+        status: "Atualização Automática",
+        registrado_em: new Date().toISOString()
+      }));
 
       if (logsNovos.length > 0) {
         for (let i = 0; i < logsNovos.length; i += 50) {
@@ -211,14 +256,17 @@ export default function App() {
         }
       }
       
-      const resVal = await fetch(`${SB_URL}/rest/v1/finance_asset_valuation?order=ticker.asc`, { 
-        method: 'GET', 
-        headers: SB_HDR 
-      });
-      if (resVal.ok) {
-        const dataVal = await resVal.json();
-        setValuations(Array.isArray(dataVal) ? dataVal : []);
+      // Atualizar tickets com últimos preços
+      for (const [ticker, preco] of Object.entries(precos)) {
+        await fetch(`${SB_URL}/rest/v1/finance_tickets?ticker=eq.${ticker}`, {
+          method: 'PATCH',
+          headers: SB_HDR,
+          body: JSON.stringify({ preco_custo: preco })
+        });
       }
+      
+      // Recarregar dados
+      await carregarDados();
       
       setTempoRestante(`${String(INTERVALO_MINUTOS).padStart(2, '0')}:00`);
       
@@ -231,7 +279,7 @@ export default function App() {
     } finally {
       setIsCronRunning(false);
     }
-  }, [tickets, buscarPrecosBrapi, verificarMercadoAberto, isCronRunning]);
+  }, [tickets, buscarPrecosBrapi, verificarMercadoAberto, isCronRunning, carregarDados]);
 
   const carregarDados = useCallback(async () => {
     setLoading(true);
@@ -315,6 +363,7 @@ export default function App() {
 
   useEffect(() => { carregarDados(); }, [carregarDados]);
 
+  // ===== CORREÇÃO 5: Timer com horário de Brasília =====
   useEffect(() => {
     const verificarStatusMercado = () => {
       const aberto = verificarMercadoAberto();
@@ -324,7 +373,10 @@ export default function App() {
 
     const iniciarCronometro = () => {
       if (cronometroIntervalRef.current) clearInterval(cronometroIntervalRef.current);
+      
       let segundosRestantes = INTERVALO_MINUTOS * 60;
+      
+      // Calcular baseado na última atualização
       if (ultimaRequisicaoRef.current) {
         const diff = (Date.now() - ultimaRequisicaoRef.current) / 1000;
         if (diff < INTERVALO_MINUTOS * 60) {
@@ -333,38 +385,83 @@ export default function App() {
       }
 
       cronometroIntervalRef.current = setInterval(() => {
-        if (!isCronRunning && isMercadoAberto) {
+        // Verificar se mercado está aberto
+        const agora = getHoraBrasilia();
+        const aberto = verificarMercadoAberto();
+        setIsMercadoAberto(aberto);
+        
+        if (!aberto) {
+          setTempoRestante('🔒 Fechado');
+          return;
+        }
+        
+        if (!isCronRunning) {
           segundosRestantes--;
+          
           if (segundosRestantes <= 0) {
-            if (isMercadoAberto) atualizarPrecos(false);
+            // Executar atualização
+            if (aberto) {
+              console.log('⏰ Atualizando preços...');
+              atualizarPrecos(false);
+            }
             segundosRestantes = INTERVALO_MINUTOS * 60;
           }
+          
           const minutos = Math.floor(segundosRestantes / 60);
           const segundos = Math.floor(segundosRestantes % 60);
           setTempoRestante(`${String(minutos).padStart(2, '0')}:${String(segundos).padStart(2, '0')}`);
-        } else if (!isMercadoAberto) {
-          setTempoRestante('🔒 Fechado');
         }
       }, 1000);
     };
 
+    // Verificar status inicial
     verificarStatusMercado();
+    
+    // Atualizar status a cada minuto
     const mercadoInterval = setInterval(verificarStatusMercado, 60000);
+    
+    // Iniciar cronômetro
     iniciarCronometro();
 
+    // Executar atualização inicial se mercado estiver aberto
     if (verificarMercadoAberto() && tickets.length > 0) {
-      if (!ultimaRequisicaoRef.current) {
-        setTimeout(() => {
-          if (verificarMercadoAberto()) atualizarPrecos(false);
-        }, 5000);
-      }
+      setTimeout(() => {
+        if (verificarMercadoAberto()) {
+          console.log('🚀 Atualização inicial...');
+          atualizarPrecos(false);
+        }
+      }, 3000);
     }
 
     return () => {
       clearInterval(mercadoInterval);
       if (cronometroIntervalRef.current) clearInterval(cronometroIntervalRef.current);
     };
-  }, [tickets, atualizarPrecos, verificarMercadoAberto, isCronRunning]);
+  }, [tickets, atualizarPrecos, verificarMercadoAberto, isCronRunning, getHoraBrasilia]);
+
+  // ===== CORREÇÃO 6: Botão de atualização melhorado =====
+  const ejecutarCronVerificacao = async () => {
+    if (!verificarMercadoAberto()) {
+      showToast('⚠️ Mercado fechado. Atualização disponível apenas durante o pregão.', 'warning');
+      return;
+    }
+    
+    if (isCronRunning) {
+      showToast('⏳ Atualização em andamento...', 'warning');
+      return;
+    }
+    
+    if (ultimaRequisicaoRef.current) {
+      const diff = Date.now() - ultimaRequisicaoRef.current;
+      if (diff < INTERVALO_MS - 10000) {
+        const restante = Math.ceil((INTERVALO_MS - diff) / 60000);
+        showToast(`⏳ Aguarde ${restante} minuto(s) para nova atualização`, 'warning');
+        return;
+      }
+    }
+    
+    await atualizarPrecos(true);
+  };
 
   // Sugestões de ticker
   useEffect(() => {
@@ -839,21 +936,22 @@ export default function App() {
     return rule?.metodologia_recomendada || 'Bazin';
   };
 
-  const ejecutarCronVerificacao = async () => {
-    if (!verificarMercadoAberto()) {
-      showToast('⚠️ Mercado fechado. Atualização disponível apenas durante o pregão.', 'warning');
-      return;
-    }
-    if (ultimaRequisicaoRef.current) {
-      const diff = Date.now() - ultimaRequisicaoRef.current;
-      if (diff < INTERVALO_MS - 10000) {
-        const restante = Math.ceil((INTERVALO_MS - diff) / 60000);
-        showToast(`⏳ Aguarde ${restante} minuto(s) para nova atualização`, 'warning');
-        return;
+  // Testar conexão com Brapi
+  useEffect(() => {
+    const testarBrapi = async () => {
+      try {
+        const response = await fetch(`https://brapi.dev/api/quote/PETR4?token=${BRAPI_TOKEN}`);
+        if (response.ok) {
+          console.log('✅ Brapi API está respondendo');
+        } else {
+          console.warn('⚠️ Brapi API não respondeu corretamente');
+        }
+      } catch (error) {
+        console.error('❌ Erro ao testar Brapi:', error);
       }
-    }
-    await atualizarPrecos(true);
-  };
+    };
+    testarBrapi();
+  }, []);
 
   // ===== RENDER =====
   return (
